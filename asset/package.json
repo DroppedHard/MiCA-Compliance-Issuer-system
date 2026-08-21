@@ -4,7 +4,10 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "build": "hardhat build",
+    "demo": "hardhat run scripts/emt-demo.ts",
+    "test": "hardhat test",
+    "typecheck": "tsc --noEmit"
   },
   "keywords": [],
   "author": "",
