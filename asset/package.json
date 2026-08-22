@@ -7,6 +7,8 @@
     "build": "hardhat build",
     "demo": "hardhat run scripts/emt-demo.ts",
     "test": "hardhat test",
+    "traffic": "hardhat run scripts/traffic.ts --network localhost",
+    "supply-cycle": "hardhat run scripts/supply-cycle.ts --network localhost",
     "typecheck": "tsc --noEmit"
   },
   "keywords": [],
