@@ -1,15 +1,24 @@
 use alloy::primitives::Address;
-use std::{env, net::SocketAddr};
+use std::{env, net::SocketAddr, time::Duration};
 use thiserror::Error;
+
+pub mod esg;
 
 const DEFAULT_RPC_URL: &str = "http://127.0.0.1:8545";
 const DEFAULT_HTTP_ADDRESS: &str = "127.0.0.1:3000";
+const DEFAULT_POLL_INTERVAL_SECONDS: u64 = 10;
+const MAX_POLL_INTERVAL_SECONDS: u64 = 10;
+const CACHE_RETENTION_SECONDS: u64 = 24 * 60 * 60;
 
 #[derive(Debug, Clone)]
 pub struct Config {
     pub rpc_url: String,
     pub token_address: Address,
     pub http_address: SocketAddr,
+    pub poll_interval: Duration,
+    pub cache_retention: Duration,
+    pub polling_max_staleness: Duration,
+    pub database_path: String,
 }
 
 #[derive(Debug, Error)]
@@ -20,6 +29,8 @@ pub enum ConfigError {
     InvalidTokenAddress(String),
     #[error("HTTP_ADDRESS is not a valid socket address: {0}")]
     InvalidHttpAddress(String),
+    #[error("POLL_INTERVAL_SECONDS must be an integer from 1 to 10, got: {0}")]
+    InvalidPollInterval(String),
 }
 
 impl Config {
@@ -35,10 +46,23 @@ impl Config {
         let http_address = raw_http_address
             .parse()
             .map_err(|_| ConfigError::InvalidHttpAddress(raw_http_address))?;
+        let raw_poll_interval = env::var("POLL_INTERVAL_SECONDS")
+            .unwrap_or_else(|_| DEFAULT_POLL_INTERVAL_SECONDS.to_string());
+        let poll_interval_seconds = raw_poll_interval
+            .parse::<u64>()
+            .ok()
+            .filter(|seconds| (1..=MAX_POLL_INTERVAL_SECONDS).contains(seconds))
+            .ok_or_else(|| ConfigError::InvalidPollInterval(raw_poll_interval.clone()))?;
+        let poll_interval = Duration::from_secs(poll_interval_seconds);
         Ok(Self {
             rpc_url,
             token_address,
             http_address,
+            poll_interval,
+            cache_retention: Duration::from_secs(CACHE_RETENTION_SECONDS),
+            polling_max_staleness: poll_interval.saturating_mul(3),
+            database_path: env::var("DATABASE_PATH")
+                .unwrap_or_else(|_| "data/backend.sqlite".to_owned()),
         })
     }
 }

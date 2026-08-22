@@ -1,4 +1,9 @@
+mod polling;
 mod ports;
 mod token_query;
-pub use ports::{TokenReadError, TokenReader};
-pub use token_query::TokenQueryService;
+pub use polling::{
+    ChainPollingService, EsgBroadcaster, ObservationBroadcaster, PollingError, PollingMonitor,
+    PollingStatus,
+};
+pub use ports::{CacheError, EsgStore, EsgStoreError, SnapshotCache, TokenReadError, TokenReader};
+pub use token_query::{CachedTokenQueryService, QueryError};
