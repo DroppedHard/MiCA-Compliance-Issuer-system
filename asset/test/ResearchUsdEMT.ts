@@ -2,12 +2,12 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { network } from "hardhat";
 
-describe("ResearchEuroEMT integration", async function () {
+describe("ResearchUsdEMT integration", async function () {
   const { viem } = await network.create();
   const [admin, holder, recipient] = await viem.getWalletClients();
 
   it("runs an issuance, payment and redemption flow", async function () {
-    const token = await viem.deployContract("ResearchEuroEMT", [admin.account.address]);
+    const token = await viem.deployContract("ResearchUsdEMT", [admin.account.address]);
     const issued = 100n * 10n ** 6n;
     const payment = 35n * 10n ** 6n;
     const redemption = 15n * 10n ** 6n;
@@ -20,9 +20,30 @@ describe("ResearchEuroEMT integration", async function () {
   });
 
   it("blocks payments involving a frozen address", async function () {
-    const token = await viem.deployContract("ResearchEuroEMT", [admin.account.address]);
+    const token = await viem.deployContract("ResearchUsdEMT", [admin.account.address]);
     await token.write.mint([holder.account.address, 10n * 10n ** 6n]);
     await viem.assertions.emitWithArgs(token.write.freeze([holder.account.address]), token, "AddressFrozen", [holder.account.address]);
     await viem.assertions.revertWithCustomErrorWithArgs(token.write.transfer([recipient.account.address, 1n], { account: holder.account }), token, "AccountFrozen", [holder.account.address]);
+  });
+
+  it("executes a correlated mint operation exactly once", async function () {
+    const token = await viem.deployContract("ResearchUsdEMT", [admin.account.address]);
+    const operationId = `0x${"11".repeat(32)}` as `0x${string}`;
+    const amount = 25n * 10n ** 6n;
+
+    await viem.assertions.emitWithArgs(
+      token.write.mintForOperation([operationId, holder.account.address, amount]),
+      token,
+      "MintOperationExecuted",
+      [operationId, holder.account.address, amount],
+    );
+    assert.equal(await token.read.isMintOperationProcessed([operationId]), true);
+    await viem.assertions.revertWithCustomErrorWithArgs(
+      token.write.mintForOperation([operationId, holder.account.address, amount]),
+      token,
+      "MintOperationAlreadyProcessed",
+      [operationId],
+    );
+    assert.equal(await token.read.balanceOf([holder.account.address]), amount);
   });
 });

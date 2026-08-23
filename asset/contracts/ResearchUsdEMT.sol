@@ -5,24 +5,27 @@ import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {ERC20Pausable} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Pausable.sol";
 
-/// @title ResearchEuroEMT
-/// @notice Local research token inspired by the operational core of Circle EURC.
-/// @dev This demo is not issued money, is not backed by euros and makes no MiCA compliance claim.
-contract ResearchEuroEMT is ERC20Pausable, AccessControl {
+/// @title ResearchUsdEMT
+/// @notice Local research token inspired by the operational core of Circle USDC.
+/// @dev This demo is not issued money, is not backed by US dollars and makes no MiCA compliance claim.
+contract ResearchUsdEMT is ERC20Pausable, AccessControl {
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
     bytes32 public constant BURNER_ROLE = keccak256("BURNER_ROLE");
     bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
     bytes32 public constant FREEZER_ROLE = keccak256("FREEZER_ROLE");
 
     mapping(address account => bool frozen) private _frozen;
+    mapping(bytes32 operationId => bool processed) private _processedMintOperations;
 
     error ZeroAddress();
     error AccountFrozen(address account);
+    error MintOperationAlreadyProcessed(bytes32 operationId);
 
     event AddressFrozen(address indexed account);
     event AddressUnfrozen(address indexed account);
+    event MintOperationExecuted(bytes32 indexed operationId, address indexed recipient, uint256 amount);
 
-    constructor(address admin) ERC20("Research Euro EMT", "rEUR") {
+    constructor(address admin) ERC20("Research USD EMT", "rUSD") {
         if (admin == address(0)) revert ZeroAddress();
 
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
@@ -38,6 +41,20 @@ contract ResearchEuroEMT is ERC20Pausable, AccessControl {
 
     function mint(address to, uint256 amount) external onlyRole(MINTER_ROLE) {
         _mint(to, amount);
+    }
+
+    /// @notice Executes one backend-correlated issuance operation exactly once.
+    /// @dev The operation identifier protects retries across the issuer database,
+    /// mock bank and blockchain boundary. It does not replace MINTER_ROLE access control.
+    function mintForOperation(bytes32 operationId, address to, uint256 amount) external onlyRole(MINTER_ROLE) {
+        if (_processedMintOperations[operationId]) revert MintOperationAlreadyProcessed(operationId);
+        _processedMintOperations[operationId] = true;
+        _mint(to, amount);
+        emit MintOperationExecuted(operationId, to, amount);
+    }
+
+    function isMintOperationProcessed(bytes32 operationId) external view returns (bool) {
+        return _processedMintOperations[operationId];
     }
 
     function burn(address from, uint256 amount) external onlyRole(BURNER_ROLE) {

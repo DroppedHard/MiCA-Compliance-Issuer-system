@@ -1,5 +1,7 @@
 # Hardhat + viem project
 
+This project is the on-chain asset owned by the rUSD issuer boundary at `issuer/asset/`.
+
 ## Project layout
 
 ```
@@ -12,7 +14,7 @@ hardhat.config.ts
 
 ## Working in this project
 
-When writing or modifying tests, configuring `hardhat.config.ts`, or interacting with the network from TypeScript, invoke the **`hardhat`** skill. It covers Solidity and TypeScript testing, how to choose between them, `forge-std` cheatcodes, the `network.create()` API, `networkHelpers`, and the compile-then-typecheck workflow. The skill itself points to the matching `hardhat-toolbox-*` skill for toolbox-specific guidance (clients, contract interaction, assertions).
+When a **`hardhat`** skill is available, use it for tests, `hardhat.config.ts` or TypeScript network interaction. If the current agent environment does not provide that skill, inspect the installed Hardhat version and use the official Hardhat 3 documentation linked below. Always run the real Solidity/TypeScript tests and type checker after changes.
 
 ## Docs
 

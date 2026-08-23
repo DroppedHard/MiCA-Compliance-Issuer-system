@@ -18,11 +18,11 @@ if (burnAmount > mintAmount) {
 const { viem } = await network.create("localhost");
 const publicClient = await viem.getPublicClient();
 const [admin, holder] = await viem.getWalletClients();
-const token = await viem.getContractAt("ResearchEuroEMT", tokenAddress);
+const token = await viem.getContractAt("ResearchUsdEMT", tokenAddress);
 
 const initialSupply = await token.read.totalSupply();
-console.log(`Connected to ResearchEuroEMT at ${tokenAddress}`);
-console.log(`Initial supply: ${formatUnits(initialSupply, DECIMALS)} rEUR`);
+console.log(`Connected to ResearchUsdEMT at ${tokenAddress}`);
+console.log(`Initial supply: ${formatUnits(initialSupply, DECIMALS)} rUSD`);
 
 const mintHash = await token.write.mint([holder.account.address, mintAmount], {
   account: admin.account,
@@ -30,7 +30,7 @@ const mintHash = await token.write.mint([holder.account.address, mintAmount], {
 const mintReceipt = await publicClient.waitForTransactionReceipt({ hash: mintHash });
 const supplyAfterMint = await token.read.totalSupply();
 console.log(
-  `Minted ${formatUnits(mintAmount, DECIMALS)} rEUR in block ${mintReceipt.blockNumber}. Supply: ${formatUnits(supplyAfterMint, DECIMALS)} rEUR`,
+  `Minted ${formatUnits(mintAmount, DECIMALS)} rUSD in block ${mintReceipt.blockNumber}. Supply: ${formatUnits(supplyAfterMint, DECIMALS)} rUSD`,
 );
 
 if (delayMs > 0) {
@@ -44,9 +44,9 @@ const burnHash = await token.write.burn([holder.account.address, burnAmount], {
 const burnReceipt = await publicClient.waitForTransactionReceipt({ hash: burnHash });
 const finalSupply = await token.read.totalSupply();
 console.log(
-  `Burned ${formatUnits(burnAmount, DECIMALS)} rEUR in block ${burnReceipt.blockNumber}. Final supply: ${formatUnits(finalSupply, DECIMALS)} rEUR`,
+  `Burned ${formatUnits(burnAmount, DECIMALS)} rUSD in block ${burnReceipt.blockNumber}. Final supply: ${formatUnits(finalSupply, DECIMALS)} rUSD`,
 );
-console.log(`Net supply change: +${formatUnits(mintAmount - burnAmount, DECIMALS)} rEUR`);
+console.log(`Net supply change: +${formatUnits(mintAmount - burnAmount, DECIMALS)} rUSD`);
 
 function requiredAddress(name: string): `0x${string}` {
   const value = process.env[name];

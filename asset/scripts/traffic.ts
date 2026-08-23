@@ -18,9 +18,9 @@ if (users.length < 4) {
   throw new Error("The traffic simulator requires at least five unlocked local accounts.");
 }
 
-const token = await viem.getContractAt("ResearchEuroEMT", tokenAddress);
+const token = await viem.getContractAt("ResearchUsdEMT", tokenAddress);
 
-console.log(`Connected to ResearchEuroEMT at ${tokenAddress}`);
+console.log(`Connected to ResearchUsdEMT at ${tokenAddress}`);
 console.log(`Preparing ${users.length} simulated users...`);
 
 for (const user of users) {
@@ -33,7 +33,7 @@ for (const user of users) {
   });
   await publicClient.waitForTransactionReceipt({ hash });
   console.log(
-    `Funded ${shortAddress(user.account.address)} with ${formatUnits(missingAmount, DECIMALS)} rEUR`,
+    `Funded ${shortAddress(user.account.address)} with ${formatUnits(missingAmount, DECIMALS)} rUSD`,
   );
 }
 
@@ -61,7 +61,7 @@ while (!shouldStop && (maxTransfers === undefined || completedTransfers < maxTra
   completedTransfers += 1;
 
   console.log(
-    `#${completedTransfers} block=${receipt.blockNumber} ${shortAddress(sender.account.address)} -> ${shortAddress(recipient.account.address)} amount=${formatUnits(amount, DECIMALS)} rEUR tx=${hash}`,
+    `#${completedTransfers} block=${receipt.blockNumber} ${shortAddress(sender.account.address)} -> ${shortAddress(recipient.account.address)} amount=${formatUnits(amount, DECIMALS)} rUSD tx=${hash}`,
   );
 
   if (!shouldStop && (maxTransfers === undefined || completedTransfers < maxTransfers)) {
