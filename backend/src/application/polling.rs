@@ -231,7 +231,7 @@ mod tests {
                 block_number: 42,
                 contract_address: "0x1234".to_owned(),
                 name: "Research Euro EMT".to_owned(),
-                symbol: "rEUR".to_owned(),
+                symbol: "rUSD".to_owned(),
                 decimals: 6,
                 total_supply_raw: "1000000".to_owned(),
             })
@@ -253,7 +253,7 @@ mod tests {
                 block_number: 42,
                 contract_address: "0x1234".to_owned(),
                 name: "Research Euro EMT".to_owned(),
-                symbol: "rEUR".to_owned(),
+                symbol: "rUSD".to_owned(),
                 decimals: 6,
                 total_supply_raw: "1000000".to_owned(),
             })
@@ -298,7 +298,7 @@ mod tests {
         let observation = query.get_latest().await.unwrap();
 
         assert_eq!(observation.snapshot.block_number, 42);
-        assert_eq!(observation.snapshot.symbol, "rEUR");
+        assert_eq!(observation.snapshot.symbol, "rUSD");
         assert!(query.polling_status().await.is_healthy);
     }
 

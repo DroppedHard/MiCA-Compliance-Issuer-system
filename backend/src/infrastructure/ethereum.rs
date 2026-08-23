@@ -13,7 +13,7 @@ use async_trait::async_trait;
 
 sol! {
     #[sol(rpc)]
-    interface ResearchEuroEMT {
+    interface ResearchUsdEMT {
         function name() external view returns (string);
         function symbol() external view returns (string);
         function decimals() external view returns (uint8);
@@ -47,7 +47,7 @@ impl TokenReader for AlloyTokenReader {
     async fn read_snapshot(&self) -> Result<TokenSnapshot, TokenReadError> {
         let chain_id = self.provider.get_chain_id().await.map_err(rpc_error)?;
         let block_number = self.provider.get_block_number().await.map_err(rpc_error)?;
-        let contract = ResearchEuroEMT::new(self.token_address, &self.provider);
+        let contract = ResearchUsdEMT::new(self.token_address, &self.provider);
         let name = contract.name().call().await.map_err(rpc_error)?;
         let symbol = contract.symbol().call().await.map_err(rpc_error)?;
         let decimals = contract.decimals().call().await.map_err(rpc_error)?;
@@ -73,7 +73,7 @@ impl TokenReader for AlloyTokenReader {
         }
         let filter = Filter::new()
             .address(self.token_address)
-            .event_signature(ResearchEuroEMT::Transfer::SIGNATURE_HASH)
+            .event_signature(ResearchUsdEMT::Transfer::SIGNATURE_HASH)
             .from_block(from_block)
             .to_block(to_block);
         let logs = self.provider.get_logs(&filter).await.map_err(rpc_error)?;

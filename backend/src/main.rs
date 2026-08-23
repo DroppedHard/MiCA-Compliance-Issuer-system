@@ -3,12 +3,18 @@ use std::sync::Arc;
 use crypto_asset_backend::{
     api,
     application::{
-        CachedTokenQueryService, ChainPollingService, EsgBroadcaster, ObservationBroadcaster,
-        PollingMonitor, SnapshotCache,
+        CachedTokenQueryService, ChainPollingService, EsgBroadcaster, IssuanceService,
+        ObservationBroadcaster, PollingMonitor, ReserveMonitor, ReservePollingService,
+        SnapshotCache,
     },
     config::Config,
     infrastructure::{
-        cache::InMemorySnapshotCache, ethereum::AlloyTokenReader, sqlite::SqliteEsgStore,
+        cache::InMemorySnapshotCache,
+        ethereum::AlloyTokenReader,
+        issuance_sqlite::SqliteIssuanceStore,
+        mock_bank_client::{HttpBankTransactionReader, HttpReserveReader},
+        sqlite::SqliteEsgStore,
+        token_issuer::AlloyTokenIssuer,
     },
 };
 use tokio::net::TcpListener;
@@ -37,8 +43,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         esg_observations.clone(),
     );
     tokio::spawn(poller.run());
+    let reserve_monitor = ReserveMonitor::new(32);
+    let reserve_poller = ReservePollingService::new(
+        Arc::new(HttpReserveReader::new(&config.mock_bank_url)),
+        Arc::clone(&cache),
+        reserve_monitor.clone(),
+        config.poll_interval,
+    );
+    tokio::spawn(reserve_poller.run());
     let token_service = Arc::new(CachedTokenQueryService::new(cache, monitor));
-    let app = api::router(token_service, observations, esg_observations, esg_store);
+    let issuance_service = Arc::new(IssuanceService::new(
+        Arc::new(SqliteIssuanceStore::open(&config.database_path)?),
+        Arc::new(HttpBankTransactionReader::new(&config.mock_bank_url)),
+        Arc::new(
+            AlloyTokenIssuer::connect(
+                &config.rpc_url,
+                config.token_address,
+                &config.issuer_private_key,
+            )
+            .await?,
+        ),
+    ));
+    let app = api::router(
+        token_service,
+        observations,
+        esg_observations,
+        esg_store,
+        reserve_monitor,
+        issuance_service,
+    );
     let listener = TcpListener::bind(config.http_address).await?;
     info!(address = %config.http_address, "HTTP server started");
     axum::serve(listener, app).await?;

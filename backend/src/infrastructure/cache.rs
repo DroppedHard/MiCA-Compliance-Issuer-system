@@ -72,7 +72,7 @@ mod tests {
                 block_number,
                 contract_address: "0x1234".to_owned(),
                 name: "Research Euro EMT".to_owned(),
-                symbol: "rEUR".to_owned(),
+                symbol: "rUSD".to_owned(),
                 decimals: 6,
                 total_supply_raw: "0".to_owned(),
             },

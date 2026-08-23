@@ -2,6 +2,7 @@ use alloy::primitives::Address;
 use std::{env, net::SocketAddr, time::Duration};
 use thiserror::Error;
 
+pub mod compliance;
 pub mod esg;
 
 const DEFAULT_RPC_URL: &str = "http://127.0.0.1:8545";
@@ -19,6 +20,8 @@ pub struct Config {
     pub cache_retention: Duration,
     pub polling_max_staleness: Duration,
     pub database_path: String,
+    pub mock_bank_url: String,
+    pub issuer_private_key: String,
 }
 
 #[derive(Debug, Error)]
@@ -31,6 +34,8 @@ pub enum ConfigError {
     InvalidHttpAddress(String),
     #[error("POLL_INTERVAL_SECONDS must be an integer from 1 to 10, got: {0}")]
     InvalidPollInterval(String),
+    #[error("ISSUER_PRIVATE_KEY is required for issuance settlement")]
+    MissingIssuerPrivateKey,
 }
 
 impl Config {
@@ -62,7 +67,11 @@ impl Config {
             cache_retention: Duration::from_secs(CACHE_RETENTION_SECONDS),
             polling_max_staleness: poll_interval.saturating_mul(3),
             database_path: env::var("DATABASE_PATH")
-                .unwrap_or_else(|_| "data/backend.sqlite".to_owned()),
+                .unwrap_or_else(|_| "data/backend-usd.sqlite".to_owned()),
+            mock_bank_url: env::var("MOCK_BANK_URL")
+                .unwrap_or_else(|_| "http://127.0.0.1:3100".to_owned()),
+            issuer_private_key: env::var("ISSUER_PRIVATE_KEY")
+                .map_err(|_| ConfigError::MissingIssuerPrivateKey)?,
         })
     }
 }

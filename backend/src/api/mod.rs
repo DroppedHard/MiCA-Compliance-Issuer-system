@@ -1,20 +1,21 @@
 use crate::{
     application::{
-        CachedTokenQueryService, EsgBroadcaster, EsgStore, ObservationBroadcaster, QueryError,
+        CachedTokenQueryService, CreateIssuance, EsgBroadcaster, EsgStore, IssuanceError,
+        IssuanceService, ObservationBroadcaster, QueryError, ReserveMonitor,
     },
-    domain::{EsgHistory, EsgObservation, TokenObservation},
+    domain::{EsgHistory, EsgObservation, ReserveCoverage, TokenObservation},
 };
 use axum::{
     Json, Router,
-    extract::State,
+    extract::{Path, State},
     http::StatusCode,
     response::{
         IntoResponse, Response, Sse,
         sse::{Event, KeepAlive},
     },
-    routing::get,
+    routing::{get, post},
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::{convert::Infallible, time::Duration};
 use tokio_stream::{StreamExt, wrappers::BroadcastStream};
@@ -25,6 +26,8 @@ struct AppState {
     observations: ObservationBroadcaster,
     esg_observations: EsgBroadcaster,
     esg_store: Arc<dyn EsgStore>,
+    reserve_monitor: ReserveMonitor,
+    issuance_service: Arc<IssuanceService>,
 }
 
 pub fn router(
@@ -32,6 +35,8 @@ pub fn router(
     observations: ObservationBroadcaster,
     esg_observations: EsgBroadcaster,
     esg_store: Arc<dyn EsgStore>,
+    reserve_monitor: ReserveMonitor,
+    issuance_service: Arc<IssuanceService>,
 ) -> Router {
     Router::new()
         .route("/health", get(health))
@@ -40,12 +45,92 @@ pub fn router(
         .route("/api/v1/esg", get(esg_snapshot))
         .route("/api/v1/esg/stream", get(esg_stream))
         .route("/api/v1/esg/daily", get(esg_daily))
+        .route("/api/v1/reserves", get(reserve_coverage))
+        .route("/api/v1/reserves/stream", get(reserve_stream))
+        .route("/api/v1/issuance-orders", post(create_issuance))
+        .route("/api/v1/issuance-orders/{operation_id}", get(get_issuance))
+        .route(
+            "/api/v1/issuance-orders/{operation_id}/settle",
+            post(settle_issuance),
+        )
         .with_state(AppState {
             token_service,
             observations,
             esg_observations,
             esg_store,
+            reserve_monitor,
+            issuance_service,
         })
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateIssuanceRequest {
+    operation_id: String,
+    recipient_address: String,
+    amount_usd_minor: String,
+}
+async fn create_issuance(
+    State(state): State<AppState>,
+    Json(request): Json<CreateIssuanceRequest>,
+) -> Result<(StatusCode, Json<crate::domain::IssuanceOrder>), ApiError> {
+    let order = state
+        .issuance_service
+        .create(CreateIssuance {
+            operation_id: request.operation_id,
+            recipient_address: request.recipient_address,
+            amount_usd_minor: request.amount_usd_minor,
+        })
+        .map_err(ApiError::from)?;
+    Ok((StatusCode::CREATED, Json(order)))
+}
+async fn get_issuance(
+    State(state): State<AppState>,
+    Path(operation_id): Path<String>,
+) -> Result<Json<crate::domain::IssuanceOrder>, ApiError> {
+    state
+        .issuance_service
+        .get(&operation_id)
+        .map(Json)
+        .map_err(ApiError::from)
+}
+async fn settle_issuance(
+    State(state): State<AppState>,
+    Path(operation_id): Path<String>,
+) -> Result<Json<crate::domain::IssuanceOrder>, ApiError> {
+    state
+        .issuance_service
+        .settle(&operation_id)
+        .await
+        .map(Json)
+        .map_err(ApiError::from)
+}
+
+async fn reserve_coverage(
+    State(state): State<AppState>,
+) -> Result<Json<ReserveCoverage>, ApiError> {
+    state
+        .reserve_monitor
+        .latest()
+        .await
+        .map(Json)
+        .map_err(|error| ApiError::Unavailable(error.to_string()))
+}
+async fn reserve_stream(
+    State(state): State<AppState>,
+) -> Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>> {
+    let stream = BroadcastStream::new(state.reserve_monitor.subscribe()).filter_map(|result| {
+        result.ok().and_then(|value| {
+            serde_json::to_string(&value)
+                .ok()
+                .map(|json| Ok(Event::default().event("reserve").data(json)))
+        })
+    });
+    Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(15))
+            .text("keep-alive"),
+    )
 }
 
 async fn esg_daily(State(state): State<AppState>) -> Result<Json<EsgHistory>, ApiError> {
@@ -139,6 +224,9 @@ async fn token_snapshot(State(state): State<AppState>) -> Result<Json<TokenObser
 }
 
 enum ApiError {
+    BadRequest(String),
+    NotFound(String),
+    Conflict(String),
     Unavailable(String),
     Internal(String),
 }
@@ -150,10 +238,30 @@ struct ErrorBody {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, message) = match self {
+            Self::BadRequest(message) => (StatusCode::BAD_REQUEST, message),
+            Self::NotFound(message) => (StatusCode::NOT_FOUND, message),
+            Self::Conflict(message) => (StatusCode::CONFLICT, message),
             Self::Unavailable(message) => (StatusCode::SERVICE_UNAVAILABLE, message),
             Self::Internal(message) => (StatusCode::INTERNAL_SERVER_ERROR, message),
         };
         (status, Json(ErrorBody { error: message })).into_response()
+    }
+}
+
+impl From<IssuanceError> for ApiError {
+    fn from(error: IssuanceError) -> Self {
+        match error {
+            IssuanceError::Invalid(_) => Self::BadRequest(error.to_string()),
+            IssuanceError::NotFound => Self::NotFound(error.to_string()),
+            IssuanceError::IdempotencyConflict
+            | IssuanceError::FiatNotConfirmed
+            | IssuanceError::BankMismatch
+            | IssuanceError::SettlementInProgress => Self::Conflict(error.to_string()),
+            IssuanceError::Bank(_) => Self::Unavailable(error.to_string()),
+            IssuanceError::Storage(_) | IssuanceError::Blockchain(_) => {
+                Self::Internal(error.to_string())
+            }
+        }
     }
 }
 
@@ -171,16 +279,72 @@ impl From<QueryError> for ApiError {
 mod tests {
     use super::*;
     use crate::{
-        application::{PollingMonitor, SnapshotCache},
+        application::{
+            BankTransactionReader, ConfirmedBankTransaction, IssuanceStore, MintResult,
+            PollingMonitor, SnapshotCache, TokenIssuer,
+        },
         config::esg,
-        domain::EsgObservation,
+        domain::{EsgObservation, IssuanceOrder},
         infrastructure::cache::InMemorySnapshotCache,
     };
+    use alloy::primitives::Address;
+    use async_trait::async_trait;
     use axum::{
         body::{Body, to_bytes},
         http::Request,
     };
+    use std::sync::Mutex;
     use tower::ServiceExt;
+
+    struct TestIssuanceStore(Mutex<Option<IssuanceOrder>>);
+    impl IssuanceStore for TestIssuanceStore {
+        fn create(&self, order: &IssuanceOrder) -> Result<IssuanceOrder, IssuanceError> {
+            let mut value = self.0.lock().unwrap();
+            if let Some(existing) = value.as_ref() {
+                return Ok(existing.clone());
+            }
+            *value = Some(order.clone());
+            Ok(order.clone())
+        }
+        fn get(&self, _: &str) -> Result<Option<IssuanceOrder>, IssuanceError> {
+            Ok(self.0.lock().unwrap().clone())
+        }
+        fn claim_for_mint(&self, _: &str) -> Result<IssuanceOrder, IssuanceError> {
+            Err(IssuanceError::SettlementInProgress)
+        }
+        fn complete(&self, _: &str, _: Option<&str>) -> Result<IssuanceOrder, IssuanceError> {
+            Err(IssuanceError::NotFound)
+        }
+        fn fail(&self, _: &str, _: &str) -> Result<(), IssuanceError> {
+            Ok(())
+        }
+    }
+    struct TestBank;
+    #[async_trait]
+    impl BankTransactionReader for TestBank {
+        async fn find(&self, _: &str) -> Result<Option<ConfirmedBankTransaction>, IssuanceError> {
+            Ok(None)
+        }
+    }
+    struct TestToken;
+    #[async_trait]
+    impl TokenIssuer for TestToken {
+        async fn mint_for_operation(
+            &self,
+            _: &str,
+            _: Address,
+            _: u64,
+        ) -> Result<MintResult, IssuanceError> {
+            Err(IssuanceError::Blockchain("not used".to_owned()))
+        }
+    }
+    fn issuance_service() -> Arc<IssuanceService> {
+        Arc::new(IssuanceService::new(
+            Arc::new(TestIssuanceStore(Mutex::new(None))),
+            Arc::new(TestBank),
+            Arc::new(TestToken),
+        ))
+    }
 
     fn test_router(esg: EsgBroadcaster) -> Router {
         let store: Arc<dyn EsgStore> =
@@ -195,7 +359,14 @@ mod tests {
             cache,
             Arc::new(PollingMonitor::new(Duration::from_secs(30))),
         ));
-        router(service, ObservationBroadcaster::new(4), esg, store)
+        router(
+            service,
+            ObservationBroadcaster::new(4),
+            esg,
+            store,
+            ReserveMonitor::new(4),
+            issuance_service(),
+        )
     }
 
     #[tokio::test]
@@ -290,5 +461,29 @@ mod tests {
         assert_eq!(json["days"][1]["energyLowerWh"], 63.0);
         assert_eq!(json["days"][1]["energyBestGuessWh"], 393.5);
         assert_eq!(json["days"][1]["energyUpperWh"], 574.5);
+    }
+
+    #[tokio::test]
+    async fn issuance_endpoint_is_idempotent_and_returns_bank_instructions() {
+        let app = test_router(EsgBroadcaster::new(4));
+        let body = r#"{"operationId":"purchase-1","recipientAddress":"0x0000000000000000000000000000000000000001","amountUsdMinor":"1250"}"#;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/issuance-orders")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let json: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 64 * 1024).await.unwrap())
+                .unwrap();
+        assert_eq!(json["status"], "awaiting_fiat");
+        assert_eq!(json["tokenAmountRaw"], "12500000");
+        assert_eq!(json["bankIdempotencyKey"], "issuance-purchase-1");
     }
 }

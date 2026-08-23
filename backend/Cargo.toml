@@ -4,12 +4,13 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-alloy = { version = "2.3.0", features = ["contract", "provider-http", "reqwest", "sol-types"] }
+alloy = { version = "2.3.0", features = ["contract", "provider-http", "reqwest", "sol-types", "signer-local"] }
 async-trait = "0.1.89"
 axum = "0.8.9"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 rusqlite = { version = "0.38.0", features = ["bundled"] }
+reqwest = { version = "0.13.4", features = ["json"] }
 thiserror = "2.0.18"
 time = { version = "0.3.47", features = ["formatting"] }
 tokio = { version = "1.53.1", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }

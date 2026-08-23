@@ -1,0 +1,278 @@
+use crate::{
+    application::{CacheError, SnapshotCache},
+    domain::{BankReserve, CoverageStatus, ReserveCoverage},
+};
+use async_trait::async_trait;
+use std::{
+    sync::Arc,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
+use thiserror::Error;
+use tokio::{
+    sync::{RwLock, broadcast},
+    time::{MissedTickBehavior, interval},
+};
+use tracing::{debug, error, info};
+
+#[async_trait]
+pub trait ReserveReader: Send + Sync {
+    async fn read_reserve(&self) -> Result<BankReserve, ReserveError>;
+}
+
+#[derive(Debug, Error)]
+pub enum ReserveError {
+    #[error("mock bank request failed: {0}")]
+    Bank(String),
+    #[error("token cache failed: {0}")]
+    Cache(String),
+    #[error("token cache has no observation yet")]
+    TokenUnavailable,
+    #[error("unsupported reserve currency: {0}")]
+    Currency(String),
+    #[error("invalid monetary value: {0}")]
+    InvalidValue(String),
+}
+impl From<CacheError> for ReserveError {
+    fn from(value: CacheError) -> Self {
+        Self::Cache(value.to_string())
+    }
+}
+
+#[derive(Clone)]
+pub struct ReserveMonitor {
+    state: Arc<RwLock<ReserveState>>,
+    sender: broadcast::Sender<ReserveCoverage>,
+}
+#[derive(Default)]
+struct ReserveState {
+    latest: Option<ReserveCoverage>,
+    last_error: Option<String>,
+}
+impl ReserveMonitor {
+    pub fn new(capacity: usize) -> Self {
+        let (sender, _) = broadcast::channel(capacity);
+        Self {
+            state: Arc::new(RwLock::new(ReserveState::default())),
+            sender,
+        }
+    }
+    pub fn subscribe(&self) -> broadcast::Receiver<ReserveCoverage> {
+        self.sender.subscribe()
+    }
+    pub async fn latest(&self) -> Result<ReserveCoverage, ReserveError> {
+        let state = self.state.read().await;
+        if let Some(error) = &state.last_error {
+            return Err(ReserveError::Bank(error.clone()));
+        }
+        state.latest.clone().ok_or(ReserveError::TokenUnavailable)
+    }
+    async fn success(&self, value: ReserveCoverage) {
+        let mut state = self.state.write().await;
+        state.latest = Some(value.clone());
+        state.last_error = None;
+        let _ = self.sender.send(value);
+    }
+    async fn failure(&self, error: String) {
+        self.state.write().await.last_error = Some(error);
+    }
+    async fn record_poll_failure(&self, error: &ReserveError) {
+        if !matches!(error, ReserveError::TokenUnavailable) {
+            self.failure(error.to_string()).await;
+        }
+    }
+}
+
+pub struct ReservePollingService {
+    reader: Arc<dyn ReserveReader>,
+    token_cache: Arc<dyn SnapshotCache>,
+    monitor: ReserveMonitor,
+    poll_interval: Duration,
+}
+impl ReservePollingService {
+    pub fn new(
+        reader: Arc<dyn ReserveReader>,
+        token_cache: Arc<dyn SnapshotCache>,
+        monitor: ReserveMonitor,
+        poll_interval: Duration,
+    ) -> Self {
+        Self {
+            reader,
+            token_cache,
+            monitor,
+            poll_interval,
+        }
+    }
+    pub async fn poll_once(&self) -> Result<ReserveCoverage, ReserveError> {
+        let token = self
+            .token_cache
+            .latest()
+            .await?
+            .ok_or(ReserveError::TokenUnavailable)?;
+        let reserve = self.reader.read_reserve().await?;
+        let coverage = calculate_coverage(
+            &token.snapshot.total_supply_raw,
+            token.snapshot.decimals,
+            reserve,
+        )?;
+        self.monitor.success(coverage.clone()).await;
+        Ok(coverage)
+    }
+    pub async fn run(self) {
+        let mut ticker = interval(self.poll_interval);
+        ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            match self.poll_once().await {
+                Ok(value) => info!(status=?value.status, "reserve coverage updated"),
+                Err(ReserveError::TokenUnavailable) => {
+                    debug!("reserve polling is waiting for the first token observation");
+                }
+                Err(error) => {
+                    let message = error.to_string();
+                    self.monitor.record_poll_failure(&error).await;
+                    error!(error=%message,"reserve polling failed");
+                }
+            }
+        }
+    }
+}
+
+pub fn calculate_coverage(
+    supply_raw: &str,
+    decimals: u8,
+    reserve: BankReserve,
+) -> Result<ReserveCoverage, ReserveError> {
+    if reserve.currency != "USD" {
+        return Err(ReserveError::Currency(reserve.currency));
+    }
+    let supply = supply_raw
+        .parse::<u128>()
+        .map_err(|_| ReserveError::InvalidValue(supply_raw.to_owned()))?;
+    let balance_minor = reserve
+        .balance_minor
+        .parse::<u128>()
+        .map_err(|_| ReserveError::InvalidValue(reserve.balance_minor.clone()))?;
+    let scale = 10_u128
+        .checked_pow(decimals.into())
+        .ok_or_else(|| ReserveError::InvalidValue("token decimals overflow".to_owned()))?;
+    let reserve_raw = balance_minor
+        .checked_mul(scale)
+        .and_then(|v| v.checked_div(100))
+        .ok_or_else(|| ReserveError::InvalidValue("reserve conversion overflow".to_owned()))?;
+    let difference = reserve_raw as i128 - supply as i128;
+    Ok(ReserveCoverage {
+        observed_at_unix_ms: unix_ms(),
+        bank_as_of_unix_ms: reserve.as_of_unix_ms,
+        reserve_account_id: reserve.account_id,
+        currency: reserve.currency,
+        reserve_balance_minor: balance_minor.to_string(),
+        reserve_balance_usd: format_minor(balance_minor),
+        token_supply_raw: supply_raw.to_owned(),
+        liability_usd: format_raw(supply, scale),
+        surplus_usd: format_signed_raw(difference, scale),
+        ratio_percent: if supply == 0 {
+            None
+        } else {
+            Some(reserve_raw as f64 / supply as f64 * 100.0)
+        },
+        status: if reserve_raw >= supply {
+            CoverageStatus::Covered
+        } else {
+            CoverageStatus::Undercollateralized
+        },
+    })
+}
+fn format_minor(value: u128) -> String {
+    format!("{}.{:02}", value / 100, value % 100)
+}
+fn format_raw(value: u128, scale: u128) -> String {
+    format_decimal(value, scale)
+}
+fn format_signed_raw(value: i128, scale: u128) -> String {
+    if value < 0 {
+        format!("-{}", format_decimal(value.unsigned_abs(), scale))
+    } else {
+        format_decimal(value as u128, scale)
+    }
+}
+fn format_decimal(value: u128, scale: u128) -> String {
+    let digits = scale.ilog10() as usize;
+    format!("{}.{:0digits$}", value / scale, value % scale)
+        .trim_end_matches('0')
+        .trim_end_matches('.')
+        .to_owned()
+}
+fn unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn bank(balance_minor: &str) -> BankReserve {
+        BankReserve {
+            account_id: "reserve-rusd".to_owned(),
+            currency: "USD".to_owned(),
+            balance_minor: balance_minor.to_owned(),
+            version: 1,
+            as_of_unix_ms: 1,
+        }
+    }
+    #[test]
+    fn calculates_coverage_with_integer_money_units() {
+        let covered = calculate_coverage("4300000000", 6, bank("450000")).unwrap();
+        assert_eq!(covered.reserve_balance_usd, "4500.00");
+        assert_eq!(covered.liability_usd, "4300");
+        assert_eq!(covered.surplus_usd, "200");
+        assert_eq!(covered.status, CoverageStatus::Covered);
+        assert!((covered.ratio_percent.unwrap() - 104.65116279).abs() < 0.000001);
+        let missing = calculate_coverage("4300000000", 6, bank("390000")).unwrap();
+        assert_eq!(missing.surplus_usd, "-400");
+        assert_eq!(missing.status, CoverageStatus::Undercollateralized);
+    }
+    #[test]
+    fn rejects_wrong_currency_and_handles_zero_supply() {
+        let mut eur = bank("100");
+        eur.currency = "EUR".to_owned();
+        assert!(matches!(
+            calculate_coverage("0", 6, eur),
+            Err(ReserveError::Currency(_))
+        ));
+        assert_eq!(
+            calculate_coverage("0", 6, bank("100"))
+                .unwrap()
+                .ratio_percent,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn startup_without_token_does_not_invalidate_last_valid_coverage() {
+        let monitor = ReserveMonitor::new(4);
+        let coverage = calculate_coverage("4000000000", 6, bank("500000")).unwrap();
+        monitor.success(coverage.clone()).await;
+
+        monitor
+            .record_poll_failure(&ReserveError::TokenUnavailable)
+            .await;
+
+        assert_eq!(monitor.latest().await.unwrap(), coverage);
+    }
+
+    #[tokio::test]
+    async fn bank_failure_marks_reserve_data_as_unavailable() {
+        let monitor = ReserveMonitor::new(4);
+        monitor
+            .success(calculate_coverage("4000000000", 6, bank("500000")).unwrap())
+            .await;
+
+        monitor
+            .record_poll_failure(&ReserveError::Bank("connection refused".to_owned()))
+            .await;
+
+        assert!(matches!(monitor.latest().await, Err(ReserveError::Bank(_))));
+    }
+}

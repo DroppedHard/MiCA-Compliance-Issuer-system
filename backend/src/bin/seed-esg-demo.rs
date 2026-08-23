@@ -3,7 +3,7 @@ use crypto_asset_backend::infrastructure::sqlite::SqliteEsgStore;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let database =
-        std::env::var("DATABASE_PATH").unwrap_or_else(|_| "data/backend.sqlite".to_owned());
+        std::env::var("DATABASE_PATH").unwrap_or_else(|_| "data/backend-usd.sqlite".to_owned());
     let raw_address = std::env::var("TOKEN_ADDRESS").map_err(|_| "TOKEN_ADDRESS is required")?;
     let address: Address = raw_address.parse()?;
     let contract = address.to_checksum(None);
