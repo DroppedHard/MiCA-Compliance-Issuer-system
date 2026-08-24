@@ -4,7 +4,11 @@
 
 The first ESG value is fetched from `GET /api/v1/esg` and seven-day history from `GET /api/v1/esg/daily` through React Query and Effect. Later current-day values arrive as `esg` events from `/api/v1/esg/stream`. The Polish chart draws the best-guess line inside Cambridge's lower/upper scenario band. “Jak obliczono?” explains the scenario assumptions and the demo's 400-million-transactions allocation.
 
-React admin dashboard for the local `ResearchEuroEMT` experiment. The UI bootstraps the latest observation with HTTP and receives subsequent observations through Server-Sent Events (SSE).
+## Reserve coverage
+
+The reserve card fetches the backend facade's `/api/v1/reserves` resource and receives later `reserve` SSE events. It never calls mockBank directly. It shows USD reserves, token liabilities, exact surplus/shortfall and the presentation coverage ratio. When mockBank is unavailable, the card explicitly reports that fresh reserve data is unavailable.
+
+React admin dashboard for the local `ResearchUsdEMT` experiment. The UI bootstraps the latest observation with HTTP and receives subsequent observations through Server-Sent Events (SSE).
 
 ## Data flow
 
@@ -40,7 +44,7 @@ Recharts was selected instead of Chart.js because shadcn/ui's official Chart com
 Install dependencies once from the repository root:
 
 ```powershell
-cd frontend
+cd issuer\frontend
 pnpm install
 ```
 
@@ -60,6 +64,14 @@ pnpm dev
 ```
 
 Open `http://127.0.0.1:5173`. Vite proxies `/api` and `/health` to `http://127.0.0.1:3000`, so no development CORS configuration is required.
+
+Available views:
+
+- `http://127.0.0.1:5173/` — administrator monitoring dashboard;
+- `http://127.0.0.1:5173/client` — temporary customer mock retained during the folder move. It will migrate to the CASP frontend when that application is implemented.
+
+The customer view currently demonstrates the planned UX only. Wallet, payment,
+escrow and transaction buttons do not yet submit real operations.
 
 Expected behavior:
 

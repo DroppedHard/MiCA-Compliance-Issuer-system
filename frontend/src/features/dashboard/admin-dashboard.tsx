@@ -1,6 +1,8 @@
 import { useState } from "react"
 import { useQuery } from "@tanstack/react-query"
-import { Activity, Blocks, CircleDollarSign, Database, Info, Leaf, Radio, ShieldCheck, Zap } from "lucide-react"
+import { Activity, Blocks, Building2, CircleDollarSign, Database, ExternalLink, Info, Leaf, Radio, ShieldCheck, TriangleAlert, Zap } from "lucide-react"
+import { reserveQueryOptions } from "@/application/queries/reserve-query"
+import { useReserveStream } from "@/application/realtime/use-reserve-stream"
 import { esgHistoryQueryOptions, esgQueryOptions } from "@/application/queries/esg-query"
 import { useEsgStream } from "@/application/realtime/use-esg-stream"
 import { tokenQueryOptions } from "@/application/queries/token-query"
@@ -17,9 +19,11 @@ export function AdminDashboard() {
   const token = useQuery(tokenQueryOptions)
   const esg = useQuery(esgQueryOptions)
   const esgHistory = useQuery(esgHistoryQueryOptions)
+  const reserve = useQuery(reserveQueryOptions)
   const [detailsOpen, setDetailsOpen] = useState(false)
   const connection = useTokenStream()
   useEsgStream()
+  useReserveStream()
 
   if (token.isPending) return <DashboardLoading />
 
@@ -48,9 +52,12 @@ export function AdminDashboard() {
           <h1 className="text-3xl font-semibold tracking-tight text-white md:text-4xl">Panel zarządzania EMT</h1>
           <p className="mt-2 max-w-2xl text-slate-400">Bieżący podgląd lokalnie wdrożonego kryptoaktywa w trybie tylko do odczytu.</p>
         </div>
-        <Badge className={connection === "live" ? "border-teal-400/30 bg-teal-400/10 text-teal-300" : "border-amber-400/30 bg-amber-400/10 text-amber-300"}>
-          <Radio className="mr-1.5 size-3" /> SSE {connectionLabel(connection)}
-        </Badge>
+        <div className="flex flex-wrap items-center gap-3">
+          <a href="/client" className="inline-flex items-center gap-2 rounded-lg border border-slate-700 px-3 py-2 text-xs font-medium text-slate-300 transition hover:border-teal-400/40 hover:bg-teal-400/10 hover:text-teal-200">Widok klienta <ExternalLink className="size-3.5" /></a>
+          <Badge className={connection === "live" ? "border-teal-400/30 bg-teal-400/10 text-teal-300" : "border-amber-400/30 bg-amber-400/10 text-amber-300"}>
+            <Radio className="mr-1.5 size-3" /> SSE {connectionLabel(connection)}
+          </Badge>
+        </div>
       </header>
 
       <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
@@ -62,8 +69,8 @@ export function AdminDashboard() {
 
       <section className="mt-4 grid gap-4 lg:grid-cols-[2fr_1fr]">
         <Card>
-          <CardHeader><CardTitle>Strumień podaży</CardTitle><CardDescription>Ostatnie obserwacje odebrane z kanału SSE backendu.</CardDescription></CardHeader>
-          <CardContent><SupplyChart /></CardContent>
+          <CardHeader><CardTitle>Podaż i rezerwa</CardTitle><CardDescription>Ostatnie obserwacje podaży tokenu i salda mockBanku odebrane przez SSE.</CardDescription></CardHeader>
+          <CardContent><SupplyChart latestToken={token.data} latestReserve={reserve.data} /></CardContent>
         </Card>
         <Card>
           <CardHeader><CardTitle>Stan systemu</CardTitle><CardDescription>Bieżący stan połączeń między warstwami.</CardDescription></CardHeader>
@@ -75,6 +82,22 @@ export function AdminDashboard() {
               <ShieldCheck className="mb-2 size-5 text-teal-400" />
               Panel działa tylko do odczytu. Operacje administracyjne tokenu nie są jeszcze podłączone.
             </div>
+          </CardContent>
+        </Card>
+      </section>
+      <section className="mt-4">
+        <Card className={reserve.data?.status === "undercollateralized" ? "border-rose-500/40" : undefined}>
+          <CardHeader><CardTitle>Pokrycie rezerwy rUSD</CardTitle><CardDescription>Dane z zewnętrznego mockBanku porównane z aktualną podażą tokenu.</CardDescription></CardHeader>
+          <CardContent>
+            {reserve.isPending && <Skeleton className="h-28" />}
+            {reserve.isError && <div className="flex items-center gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-200"><TriangleAlert className="size-5" /> Brak świeżych danych z mockBanku. Uruchom serwis na porcie 3100.</div>}
+            {reserve.data && <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+              <EsgMetric icon={Building2} label="Rezerwa bankowa" value={`${reserve.data.reserveBalanceUsd} USD`} />
+              <EsgMetric icon={CircleDollarSign} label="Zobowiązanie tokenu" value={`${reserve.data.liabilityUsd} USD`} />
+              <EsgMetric icon={ShieldCheck} label="Wskaźnik pokrycia" value={reserve.data.ratioPercent === null ? "Brak podaży" : `${reserve.data.ratioPercent.toLocaleString("pl-PL", { maximumFractionDigits: 2 })}%`} />
+              <EsgMetric icon={reserve.data.status === "covered" ? ShieldCheck : TriangleAlert} label={Number(reserve.data.surplusUsd) >= 0 ? "Nadwyżka" : "Niedobór"} value={`${reserve.data.surplusUsd} USD`} />
+            </div>}
+            {reserve.data && <div className={`mt-4 rounded-xl border p-3 text-sm ${reserve.data.status === "covered" ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300" : "border-rose-500/30 bg-rose-500/10 text-rose-300"}`}>{reserve.data.status === "covered" ? "Rezerwa w pełni pokrywa aktualną podaż rUSD." : "Rezerwa nie pokrywa aktualnej podaży rUSD. Jest to sygnał monitorujący — token nie jest jeszcze automatycznie blokowany."}</div>}
           </CardContent>
         </Card>
       </section>

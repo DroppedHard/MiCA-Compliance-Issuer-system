@@ -1,5 +1,5 @@
 {
-  "name": "crypto-asset-admin",
+  "name": "rusd-issuer-frontend",
   "private": true,
   "version": "0.1.0",
   "type": "module",

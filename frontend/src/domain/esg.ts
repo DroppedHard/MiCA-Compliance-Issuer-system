@@ -5,6 +5,7 @@ export const EsgEstimateSchema = Schema.Struct({
   energyLowerWh: Schema.Number, energyBestGuessWh: Schema.Number, energyUpperWh: Schema.Number, emissionsGCo2e: Schema.Number,
   renewableEnergyWh: Schema.Number, nuclearEnergyWh: Schema.Number, fossilEnergyWh: Schema.Number,
 })
+export type EsgEstimate = typeof EsgEstimateSchema.Type
 
 export const EsgObservationSchema = Schema.Struct({
   observedAtUnixMs: Schema.Number,
