@@ -1,5 +1,5 @@
 use crate::{
-    application::{CacheError, SnapshotCache},
+    application::{AssetStateService, CacheError, SnapshotCache},
     domain::{BankReserve, CoverageStatus, ReserveCoverage},
 };
 use async_trait::async_trait;
@@ -17,6 +17,38 @@ use tracing::{debug, error, info};
 #[async_trait]
 pub trait ReserveReader: Send + Sync {
     async fn read_reserve(&self) -> Result<BankReserve, ReserveError>;
+}
+#[async_trait]
+pub trait ReserveInitializer: Send + Sync {
+    async fn initialize_reserve(&self, target_balance_minor: u64) -> Result<(), ReserveError>;
+}
+
+/// Returns the USD-cent reserve target for the explicit 110% demo policy.
+/// Rounding is always upward so fractional cents never reduce coverage.
+pub fn initial_reserve_target_minor(
+    total_supply_raw: &str,
+    decimals: u8,
+) -> Result<u64, ReserveError> {
+    if decimals < 2 {
+        return Err(ReserveError::InvalidValue(
+            "token must expose at least two decimals".into(),
+        ));
+    }
+    let raw = total_supply_raw
+        .parse::<u128>()
+        .map_err(|_| ReserveError::InvalidValue(total_supply_raw.into()))?;
+    let units_per_cent = 10_u128
+        .checked_pow((decimals - 2).into())
+        .ok_or_else(|| ReserveError::InvalidValue("token decimals overflow".into()))?;
+    let numerator = raw
+        .checked_mul(110)
+        .ok_or_else(|| ReserveError::InvalidValue("reserve target overflow".into()))?;
+    let denominator = 100_u128
+        .checked_mul(units_per_cent)
+        .ok_or_else(|| ReserveError::InvalidValue("reserve denominator overflow".into()))?;
+    let target = numerator.div_ceil(denominator);
+    u64::try_from(target)
+        .map_err(|_| ReserveError::InvalidValue("reserve target exceeds demo range".into()))
 }
 
 #[derive(Debug, Error)]
@@ -86,6 +118,7 @@ pub struct ReservePollingService {
     reader: Arc<dyn ReserveReader>,
     token_cache: Arc<dyn SnapshotCache>,
     monitor: ReserveMonitor,
+    asset_state: Arc<AssetStateService>,
     poll_interval: Duration,
 }
 impl ReservePollingService {
@@ -93,12 +126,14 @@ impl ReservePollingService {
         reader: Arc<dyn ReserveReader>,
         token_cache: Arc<dyn SnapshotCache>,
         monitor: ReserveMonitor,
+        asset_state: Arc<AssetStateService>,
         poll_interval: Duration,
     ) -> Self {
         Self {
             reader,
             token_cache,
             monitor,
+            asset_state,
             poll_interval,
         }
     }
@@ -115,6 +150,9 @@ impl ReservePollingService {
             reserve,
         )?;
         self.monitor.success(coverage.clone()).await;
+        self.asset_state
+            .evaluate_coverage(&coverage)
+            .map_err(|error| ReserveError::Cache(error.to_string()))?;
         Ok(coverage)
     }
     pub async fn run(self) {
@@ -125,11 +163,21 @@ impl ReservePollingService {
             match self.poll_once().await {
                 Ok(value) => info!(status=?value.status, "reserve coverage updated"),
                 Err(ReserveError::TokenUnavailable) => {
+                    if let Err(error) = self.asset_state.mark_data_unavailable(
+                        "Token supply is unavailable, so reserve coverage cannot be evaluated",
+                    ) {
+                        error!(error=%error, "asset state update failed");
+                    }
                     debug!("reserve polling is waiting for the first token observation");
                 }
                 Err(error) => {
                     let message = error.to_string();
                     self.monitor.record_poll_failure(&error).await;
+                    if let Err(state_error) =
+                        self.asset_state.mark_data_unavailable(message.clone())
+                    {
+                        error!(error=%state_error, "asset state update failed");
+                    }
                     error!(error=%message,"reserve polling failed");
                 }
             }
@@ -212,6 +260,14 @@ fn unix_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn calculates_initial_reserve_at_110_percent_and_rounds_up() {
+        assert_eq!(
+            initial_reserve_target_minor("10250000000", 6).unwrap(),
+            1_127_500
+        );
+        assert_eq!(initial_reserve_target_minor("1", 6).unwrap(), 1)
+    }
     fn bank(balance_minor: &str) -> BankReserve {
         BankReserve {
             account_id: "reserve-rusd".to_owned(),

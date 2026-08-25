@@ -1,9 +1,10 @@
 use crate::{
     application::{
-        CachedTokenQueryService, CreateIssuance, EsgBroadcaster, EsgStore, IssuanceError,
-        IssuanceService, ObservationBroadcaster, QueryError, ReserveMonitor,
+        AssetStateService, CachedTokenQueryService, CreateIssuance, EsgBroadcaster, EsgStore,
+        IssuanceError, IssuanceService, ObservationBroadcaster, QueryError, RedemptionError,
+        RedemptionService, ReserveMonitor,
     },
-    domain::{EsgHistory, EsgObservation, ReserveCoverage, TokenObservation},
+    domain::{AssetState, EsgHistory, EsgObservation, ReserveCoverage, TokenObservation},
 };
 use axum::{
     Json, Router,
@@ -27,7 +28,9 @@ struct AppState {
     esg_observations: EsgBroadcaster,
     esg_store: Arc<dyn EsgStore>,
     reserve_monitor: ReserveMonitor,
+    asset_state_service: Arc<AssetStateService>,
     issuance_service: Arc<IssuanceService>,
+    redemption_service: Arc<RedemptionService>,
 }
 
 pub fn router(
@@ -36,7 +39,9 @@ pub fn router(
     esg_observations: EsgBroadcaster,
     esg_store: Arc<dyn EsgStore>,
     reserve_monitor: ReserveMonitor,
+    asset_state_service: Arc<AssetStateService>,
     issuance_service: Arc<IssuanceService>,
+    redemption_service: Arc<RedemptionService>,
 ) -> Router {
     Router::new()
         .route("/health", get(health))
@@ -47,11 +52,23 @@ pub fn router(
         .route("/api/v1/esg/daily", get(esg_daily))
         .route("/api/v1/reserves", get(reserve_coverage))
         .route("/api/v1/reserves/stream", get(reserve_stream))
+        .route("/api/v1/asset-state", get(asset_state))
+        .route("/api/v1/asset-state/stream", get(asset_state_stream))
+        .route("/api/v1/admin/asset-state/wind-down", post(enter_wind_down))
         .route("/api/v1/issuance-orders", post(create_issuance))
         .route("/api/v1/issuance-orders/{operation_id}", get(get_issuance))
         .route(
             "/api/v1/issuance-orders/{operation_id}/settle",
             post(settle_issuance),
+        )
+        .route("/api/v1/redemption-orders", post(create_redemption))
+        .route(
+            "/api/v1/redemption-orders/{operation_id}",
+            get(get_redemption),
+        )
+        .route(
+            "/api/v1/redemption-orders/{operation_id}/settle",
+            post(settle_redemption),
         )
         .with_state(AppState {
             token_service,
@@ -59,8 +76,94 @@ pub fn router(
             esg_observations,
             esg_store,
             reserve_monitor,
+            asset_state_service,
             issuance_service,
+            redemption_service,
         })
+}
+
+async fn asset_state(State(state): State<AppState>) -> Result<Json<AssetState>, ApiError> {
+    state
+        .asset_state_service
+        .current()
+        .map(Json)
+        .map_err(|error| ApiError::Internal(error.to_string()))
+}
+
+async fn asset_state_stream(
+    State(state): State<AppState>,
+) -> Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>> {
+    let stream = BroadcastStream::new(state.asset_state_service.subscribe()).filter_map(|result| {
+        result.ok().and_then(|value| {
+            serde_json::to_string(&value)
+                .ok()
+                .map(|json| Ok(Event::default().event("asset-state").data(json)))
+        })
+    });
+    Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(15))
+            .text("keep-alive"),
+    )
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WindDownRequest {
+    reason: String,
+}
+
+async fn enter_wind_down(
+    State(state): State<AppState>,
+    Json(request): Json<WindDownRequest>,
+) -> Result<Json<AssetState>, ApiError> {
+    if request.reason.trim().is_empty() {
+        return Err(ApiError::BadRequest(
+            "wind-down reason cannot be empty".into(),
+        ));
+    }
+    state
+        .asset_state_service
+        .enter_wind_down(request.reason)
+        .map(Json)
+        .map_err(|error| ApiError::Internal(error.to_string()))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateRedemptionRequest {
+    operation_id: String,
+    holder_address: String,
+    token_amount_raw: String,
+}
+async fn create_redemption(
+    State(s): State<AppState>,
+    Json(r): Json<CreateRedemptionRequest>,
+) -> Result<(StatusCode, Json<crate::domain::RedemptionOrder>), ApiError> {
+    let o = s
+        .redemption_service
+        .create(r.operation_id, r.holder_address, r.token_amount_raw)
+        .map_err(ApiError::from)?;
+    Ok((StatusCode::CREATED, Json(o)))
+}
+async fn get_redemption(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<crate::domain::RedemptionOrder>, ApiError> {
+    s.redemption_service
+        .get(&id)
+        .map(Json)
+        .map_err(ApiError::from)
+}
+async fn settle_redemption(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<crate::domain::RedemptionOrder>, ApiError> {
+    s.redemption_service
+        .settle(&id)
+        .await
+        .map(Json)
+        .map_err(ApiError::from)
 }
 
 #[derive(Deserialize)]
@@ -264,6 +367,18 @@ impl From<IssuanceError> for ApiError {
         }
     }
 }
+impl From<RedemptionError> for ApiError {
+    fn from(e: RedemptionError) -> Self {
+        match e {
+            RedemptionError::Invalid(_) => Self::BadRequest(e.to_string()),
+            RedemptionError::NotFound => Self::NotFound(e.to_string()),
+            RedemptionError::IdempotencyConflict => Self::Conflict(e.to_string()),
+            RedemptionError::Storage(_)
+            | RedemptionError::Blockchain(_)
+            | RedemptionError::Bank(_) => Self::Internal(e.to_string()),
+        }
+    }
+}
 
 impl From<QueryError> for ApiError {
     fn from(error: QueryError) -> Self {
@@ -280,8 +395,8 @@ mod tests {
     use super::*;
     use crate::{
         application::{
-            BankTransactionReader, ConfirmedBankTransaction, IssuanceStore, MintResult,
-            PollingMonitor, SnapshotCache, TokenIssuer,
+            BankTransactionReader, ConfirmedBankTransaction, IssuanceStore, MintResult, PayoutBank,
+            PollingMonitor, RedemptionToken, SnapshotCache, TokenIssuer,
         },
         config::esg,
         domain::{EsgObservation, IssuanceOrder},
@@ -338,11 +453,38 @@ mod tests {
             Err(IssuanceError::Blockchain("not used".to_owned()))
         }
     }
+    #[async_trait]
+    impl RedemptionToken for TestToken {
+        async fn burn_for_operation(
+            &self,
+            _: &str,
+            _: Address,
+            _: u64,
+        ) -> Result<Option<String>, RedemptionError> {
+            Ok(Some("0xburn".into()))
+        }
+    }
+    #[async_trait]
+    impl PayoutBank for TestBank {
+        async fn pay_usd(&self, _: &str, _: u64) -> Result<(), RedemptionError> {
+            Ok(())
+        }
+    }
     fn issuance_service() -> Arc<IssuanceService> {
         Arc::new(IssuanceService::new(
             Arc::new(TestIssuanceStore(Mutex::new(None))),
             Arc::new(TestBank),
             Arc::new(TestToken),
+        ))
+    }
+    fn redemption_service() -> Arc<RedemptionService> {
+        Arc::new(RedemptionService::new(
+            Arc::new(
+                crate::infrastructure::redemption_sqlite::SqliteRedemptionStore::open(":memory:")
+                    .unwrap(),
+            ),
+            Arc::new(TestToken),
+            Arc::new(TestBank),
         ))
     }
 
@@ -365,7 +507,17 @@ mod tests {
             esg,
             store,
             ReserveMonitor::new(4),
+            Arc::new(AssetStateService::new(
+                Arc::new(
+                    crate::infrastructure::asset_state_sqlite::SqliteAssetStateStore::open(
+                        ":memory:",
+                    )
+                    .unwrap(),
+                ),
+                4,
+            )),
             issuance_service(),
+            redemption_service(),
         )
     }
 
@@ -381,6 +533,24 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn asset_state_endpoint_returns_the_persisted_backend_decision() {
+        let response = test_router(EsgBroadcaster::new(4))
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/asset-state")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["state"], "data_unavailable");
+        assert_eq!(json["policyVersion"], "reserve-coverage-v1");
     }
 
     #[tokio::test]

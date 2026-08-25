@@ -15,3 +15,12 @@ CREATE TABLE IF NOT EXISTS reserve_transactions (
     created_at_unix_ms INTEGER NOT NULL,
     FOREIGN KEY(account_id) REFERENCES reserve_accounts(account_id)
 );
+CREATE TABLE IF NOT EXISTS reserve_initializations (
+    initialization_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id TEXT NOT NULL,
+    previous_balance_minor INTEGER NOT NULL,
+    target_balance_minor INTEGER NOT NULL,
+    reference TEXT NOT NULL,
+    created_at_unix_ms INTEGER NOT NULL,
+    FOREIGN KEY(account_id) REFERENCES reserve_accounts(account_id)
+);

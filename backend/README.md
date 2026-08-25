@@ -2,13 +2,19 @@
 
 ## mockBank and reserve coverage
 
-mockBank is a separate process with its own `data/mock-bank-usd.sqlite` database and immutable operation ledger. It starts with `5000.00 USD` by default:
+mockBank is a separate process with its own `data/mock-bank-usd.sqlite` database and immutable deposit/withdrawal ledger. It creates the reserve account with `0.00 USD`; it does not invent issuer assets by itself.
+
+On every issuer-backend startup, the issuer reads the current on-chain rUSD supply and initializes its mockBank account to exactly 110% of that liability. The initialization atomically clears the previous balance and sets the target while preserving an audit row containing the previous balance, target and timestamp. This is an explicit demo bootstrap policy, not continuous 110% maintenance: later issuance deposits remain 1:1 and can dilute the initial buffer.
 
 ```powershell
 cargo run --bin mock-bank
 ```
 
 Run the main backend in another terminal as before. It polls `http://127.0.0.1:3100` every polling cycle; override that location with `MOCK_BANK_URL`. The facade exposes `GET /api/v1/reserves` and `/api/v1/reserves/stream`.
+
+The same polling result drives the persisted issuer-owned asset assessment. Read it with `GET /api/v1/asset-state` or subscribe to `/api/v1/asset-state/stream` (SSE event `asset-state`). Policy `reserve-coverage-v1` maps coverage of at least 105% to `active`, 100–105% to `warning`, below 100% to `mint_blocked`, and missing evidence to `data_unavailable`. The frontend does not reproduce these rules.
+
+For the later wind-down scenario, the demo-only administrative command is `POST /api/v1/admin/asset-state/wind-down` with JSON such as `{"reason":"supervisory wind-down simulation"}`. It persists a terminal `wind_down` decision. At the current roadmap stage this does not yet change the smart contract; on-chain enforcement is deliberately tracked separately.
 
 Simulate a USD deposit:
 
@@ -134,7 +140,7 @@ Exact resolved versions are stored in `Cargo.lock` after a successful build.
 
 ## Configuration
 
-The service reads environment variables directly; it does not load `.env` automatically.
+Both the issuer binary and mockBank load `.env` from this directory before parsing configuration. Existing process environment variables take precedence. `.env` is gitignored; `.env.example` is the reproducible local-Hardhat template.
 
 | Variable | Required | Default | Meaning |
 | --- | --- | --- | --- |
@@ -146,6 +152,11 @@ The service reads environment variables directly; it does not load `.env` automa
 | `DATABASE_PATH` | no | `data/backend-usd.sqlite` | issuer ESG and issuance-operation SQLite database |
 | `MOCK_BANK_URL` | no | `http://127.0.0.1:3100` | mockBank base URL |
 | `ISSUER_PRIVATE_KEY` | yes | none | local issuer signer holding `MINTER_ROLE`; use only a disposable development key |
+| `INITIALIZE_RESERVE_ON_STARTUP` | no | `true` | replace the mockBank balance with 110% of current supply during issuer startup |
+
+mockBank must be running before the issuer backend because reserve initialization is a startup prerequisite. `MOCK_BANK_INITIAL_BALANCE_MINOR` defaults to `0` and only affects creation of a previously absent account; existing balances are replaced by issuer initialization.
+
+For reserve-shortfall and recovery tests, set `INITIALIZE_RESERVE_ON_STARTUP=false` before starting the issuer. This disables only the automatic 110% reset. Reserve polling remains active and reports the actual mockBank value, while issuance still requires a matching confirmed fiat deposit. This makes under-collateralization testable without silently allowing unbacked minting.
 
 ## Local setup tutorial
 
@@ -181,15 +192,21 @@ In terminal 2, deploy the token:
 npx hardhat ignition deploy ignition/modules/ResearchUsdEMT.ts --network localhost
 ```
 
-Copy the deployed address. In terminal 3, start the backend from the repository root:
+For a fresh default Hardhat node, the ready local `.env` already contains the deterministic contract address and issuer account. In terminal 3, start the backend:
 
 ```powershell
 cd issuer\backend
-$env:TOKEN_ADDRESS="0x..."
-cargo run
+cargo run --bin crypto-asset-backend
 ```
 
-Optional configuration can be set in the same terminal before `cargo run`:
+In another terminal start mockBank, which reads the same file:
+
+```powershell
+cd issuer\backend
+cargo run --bin mock-bank
+```
+
+Shell variables can still override `.env` for one process:
 
 ```powershell
 $env:RPC_URL="http://127.0.0.1:8545"
@@ -199,7 +216,7 @@ $env:RUST_LOG="info"
 $env:ISSUER_PRIVATE_KEY="0x...LOCAL_HARDHAT_PRIVATE_KEY..."
 ```
 
-Environment variables set with `$env:` apply only to the current PowerShell process. The backend reads them directly and does not automatically load `.env`.
+Environment variables set with `$env:` apply only to the current PowerShell process and take precedence over values loaded from `.env`.
 
 Read the API:
 
@@ -237,6 +254,28 @@ Example token response before any mint:
 `observedAtUnixMs` is the backend observation time. `blockNumber` identifies the chain tip observed during that poll. `totalSupplyRaw` is a decimal string in the token's smallest unit. With six decimals, `1000000` means `1 rUSD`. A string is used because an Ethereum `uint256` can exceed JavaScript's safe integer range.
 
 The cache is deliberately process-local for the demo. It can hold approximately 8,640 ten-second observations for one day, has no external service dependency, and is cleared when the backend restarts. The `SnapshotCache` port isolates this choice, so Redis or a database can replace it without changing polling or HTTP logic.
+
+## Issuer redemption API
+
+The CASP uses the following idempotent issuer boundary:
+
+- `POST /api/v1/redemption-orders` creates or returns an order identified by `operationId`;
+- `GET /api/v1/redemption-orders/{operationId}` reads its persisted state;
+- `POST /api/v1/redemption-orders/{operationId}/settle` burns rUSD from the supplied holder wallet and records the corresponding mockBank USD withdrawal.
+
+The contract correlates every burn with the operation ID and rejects a second burn for the same identifier. The backend persists progress, so a retry after the burn but before the mockBank response resumes the payout without burning again. This is a demo saga across SQLite, Ethereum and mockBank; it is not a distributed ACID transaction.
+
+Example request for 10 rUSD:
+
+```powershell
+$body = @{
+  operationId = "issuer-redemption-demo-1"
+  holderAddress = "0x...CASP_HOT_ADDRESS..."
+  tokenAmountRaw = "10000000"
+} | ConvertTo-Json
+Invoke-RestMethod -Method Post -ContentType application/json -Body $body http://127.0.0.1:3000/api/v1/redemption-orders
+Invoke-RestMethod -Method Post http://127.0.0.1:3000/api/v1/redemption-orders/issuer-redemption-demo-1/settle
+```
 
 ## Development feedback loop
 

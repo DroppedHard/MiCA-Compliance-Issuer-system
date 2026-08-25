@@ -4,7 +4,7 @@ use axum::{
     extract::State,
     http::StatusCode,
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{get, post, put},
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -130,6 +130,38 @@ impl MockBankStore {
             .map_err(storage)?
             .ok_or(MockBankError::TransactionNotFound)
     }
+    pub fn initialize(
+        &self,
+        request: InitializeReserveRequest,
+    ) -> Result<BankReserve, MockBankError> {
+        let target = request
+            .target_balance_minor
+            .parse::<i64>()
+            .ok()
+            .filter(|value| *value >= 0)
+            .ok_or(MockBankError::InvalidTarget)?;
+        if request.reference.trim().is_empty() {
+            return Err(MockBankError::InvalidRequest);
+        }
+        let mut connection = self.connection.lock().map_err(storage)?;
+        let tx = connection.transaction().map_err(storage)?;
+        let previous: i64 = tx
+            .query_row(
+                "SELECT balance_minor FROM reserve_accounts WHERE account_id=?1",
+                [ACCOUNT_ID],
+                |row| row.get(0),
+            )
+            .map_err(storage)?;
+        let now = unix_ms() as i64;
+        // The two assignments intentionally model demo cleanup followed by issuer initialization.
+        // They remain one SQLite transaction, so observers never see an unexplained intermediate state.
+        tx.execute("UPDATE reserve_accounts SET balance_minor=0,version=version+1,updated_at_unix_ms=?1 WHERE account_id=?2",params![now,ACCOUNT_ID]).map_err(storage)?;
+        tx.execute("UPDATE reserve_accounts SET balance_minor=?1,version=version+1,updated_at_unix_ms=?2 WHERE account_id=?3",params![target,now,ACCOUNT_ID]).map_err(storage)?;
+        tx.execute("INSERT INTO reserve_initializations(account_id,previous_balance_minor,target_balance_minor,reference,created_at_unix_ms) VALUES(?1,?2,?3,?4,?5)",params![ACCOUNT_ID,previous,target,request.reference,now]).map_err(storage)?;
+        tx.commit().map_err(storage)?;
+        drop(connection);
+        self.reserve()
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -152,6 +184,12 @@ pub struct ReserveOperationRequest {
     pub reference: String,
     pub idempotency_key: String,
 }
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InitializeReserveRequest {
+    pub target_balance_minor: String,
+    pub reference: String,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReserveTransaction {
@@ -167,6 +205,8 @@ pub enum MockBankError {
     InvalidAmount,
     #[error("reference and idempotencyKey are required")]
     InvalidRequest,
+    #[error("invalid non-negative targetBalanceMinor")]
+    InvalidTarget,
     #[error("reserve account has insufficient funds")]
     InsufficientFunds,
     #[error("idempotency key was already used with a different operation")]
@@ -199,6 +239,10 @@ pub fn router(store: Arc<MockBankStore>) -> Router {
             post(deposit),
         )
         .route(
+            "/api/v1/admin/reserve-accounts/reserve-rusd/initialize",
+            put(initialize),
+        )
+        .route(
             "/api/v1/reserve-accounts/reserve-rusd/withdrawals",
             post(withdraw),
         )
@@ -226,6 +270,12 @@ async fn withdraw(
 ) -> Result<Json<BankReserve>, MockBankError> {
     state.store.apply(Operation::Withdrawal, request).map(Json)
 }
+async fn initialize(
+    State(state): State<AppState>,
+    Json(request): Json<InitializeReserveRequest>,
+) -> Result<Json<BankReserve>, MockBankError> {
+    state.store.initialize(request).map(Json)
+}
 async fn get_transaction(
     State(state): State<AppState>,
     axum::extract::Path(idempotency_key): axum::extract::Path<String>,
@@ -243,7 +293,9 @@ struct ErrorBody {
 impl IntoResponse for MockBankError {
     fn into_response(self) -> Response {
         let status = match self {
-            Self::InvalidAmount | Self::InvalidRequest => StatusCode::BAD_REQUEST,
+            Self::InvalidAmount | Self::InvalidRequest | Self::InvalidTarget => {
+                StatusCode::BAD_REQUEST
+            }
             Self::InsufficientFunds | Self::IdempotencyConflict => StatusCode::CONFLICT,
             Self::TransactionNotFound => StatusCode::NOT_FOUND,
             Self::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -314,5 +366,25 @@ mod tests {
             store.apply(Operation::Deposit, request("purchase-1", "51")),
             Err(MockBankError::IdempotencyConflict)
         ));
+    }
+    #[test]
+    fn issuer_initialization_replaces_balance_and_records_auditable_state() {
+        let store = MockBankStore::open(":memory:", 500_000).unwrap();
+        let result = store
+            .initialize(InitializeReserveRequest {
+                target_balance_minor: "110000".into(),
+                reference: "issuer-startup".into(),
+            })
+            .unwrap();
+        assert_eq!(result.balance_minor, "110000");
+        let connection = store.connection.lock().unwrap();
+        let values: (i64, i64) = connection
+            .query_row(
+                "SELECT previous_balance_minor,target_balance_minor FROM reserve_initializations",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(values, (500_000, 110_000));
     }
 }

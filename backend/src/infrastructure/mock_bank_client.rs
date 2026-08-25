@@ -1,6 +1,7 @@
 use crate::{
     application::{
-        BankTransactionReader, ConfirmedBankTransaction, IssuanceError, ReserveError, ReserveReader,
+        BankTransactionReader, ConfirmedBankTransaction, IssuanceError, PayoutBank,
+        RedemptionError, ReserveError, ReserveInitializer, ReserveReader,
     },
     domain::BankReserve,
 };
@@ -9,6 +10,24 @@ use async_trait::async_trait;
 pub struct HttpReserveReader {
     client: reqwest::Client,
     url: String,
+}
+#[async_trait]
+impl PayoutBank for HttpBankTransactionReader {
+    async fn pay_usd(&self, id: &str, amount_minor: u64) -> Result<(), RedemptionError> {
+        let body = serde_json::json!({"amountMinor":amount_minor.to_string(),"reference":id,"idempotencyKey":format!("redemption-{id}")});
+        self.client
+            .post(format!(
+                "{}/api/v1/reserve-accounts/reserve-rusd/withdrawals",
+                self.base_url
+            ))
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| RedemptionError::Bank(e.to_string()))?
+            .error_for_status()
+            .map_err(|e| RedemptionError::Bank(e.to_string()))?;
+        Ok(())
+    }
 }
 impl HttpReserveReader {
     pub fn new(base_url: &str) -> Self {
@@ -19,6 +38,13 @@ impl HttpReserveReader {
                 base_url.trim_end_matches('/')
             ),
         }
+    }
+}
+#[async_trait]
+impl ReserveInitializer for HttpBankTransactionReader {
+    async fn initialize_reserve(&self, target: u64) -> Result<(), ReserveError> {
+        self.client.put(format!("{}/api/v1/admin/reserve-accounts/reserve-rusd/initialize",self.base_url)).json(&serde_json::json!({"targetBalanceMinor":target.to_string(),"reference":"issuer-startup-110-percent"})).send().await.map_err(bank)?.error_for_status().map_err(bank)?;
+        Ok(())
     }
 }
 #[async_trait]

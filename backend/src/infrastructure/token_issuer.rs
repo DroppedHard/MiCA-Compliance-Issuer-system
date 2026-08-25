@@ -1,4 +1,6 @@
-use crate::application::{IssuanceError, MintResult, TokenIssuer};
+use crate::application::{
+    IssuanceError, MintResult, RedemptionError, RedemptionToken, TokenIssuer,
+};
 use alloy::{
     primitives::{Address, U256, keccak256},
     providers::{DynProvider, Provider, ProviderBuilder},
@@ -12,6 +14,37 @@ sol! {
     interface IssuanceToken {
         function mintForOperation(bytes32 operationId, address recipient, uint256 amount) external;
         function isMintOperationProcessed(bytes32 operationId) external view returns (bool);
+        function burnForOperation(bytes32 operationId, address holder, uint256 amount) external;
+        function isBurnOperationProcessed(bytes32 operationId) external view returns (bool);
+    }
+}
+#[async_trait]
+impl RedemptionToken for AlloyTokenIssuer {
+    async fn burn_for_operation(
+        &self,
+        id: &str,
+        holder: Address,
+        amount: u64,
+    ) -> Result<Option<String>, RedemptionError> {
+        let op = keccak256(id.as_bytes());
+        let contract = IssuanceToken::new(self.token_address, &self.provider);
+        if contract
+            .isBurnOperationProcessed(op)
+            .call()
+            .await
+            .map_err(redemption_chain)?
+        {
+            return Ok(None);
+        }
+        let receipt = contract
+            .burnForOperation(op, holder, U256::from(amount))
+            .send()
+            .await
+            .map_err(redemption_chain)?
+            .get_receipt()
+            .await
+            .map_err(redemption_chain)?;
+        Ok(Some(receipt.transaction_hash.to_string()))
     }
 }
 
@@ -73,4 +106,7 @@ impl TokenIssuer for AlloyTokenIssuer {
 }
 fn chain(error: impl std::fmt::Display) -> IssuanceError {
     IssuanceError::Blockchain(error.to_string())
+}
+fn redemption_chain(error: impl std::fmt::Display) -> RedemptionError {
+    RedemptionError::Blockchain(error.to_string())
 }

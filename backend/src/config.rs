@@ -22,6 +22,7 @@ pub struct Config {
     pub database_path: String,
     pub mock_bank_url: String,
     pub issuer_private_key: String,
+    pub initialize_reserve_on_startup: bool,
 }
 
 #[derive(Debug, Error)]
@@ -36,6 +37,8 @@ pub enum ConfigError {
     InvalidPollInterval(String),
     #[error("ISSUER_PRIVATE_KEY is required for issuance settlement")]
     MissingIssuerPrivateKey,
+    #[error("INITIALIZE_RESERVE_ON_STARTUP must be true or false, got: {0}")]
+    InvalidReserveInitializationFlag(String),
 }
 
 impl Config {
@@ -72,6 +75,15 @@ impl Config {
                 .unwrap_or_else(|_| "http://127.0.0.1:3100".to_owned()),
             issuer_private_key: env::var("ISSUER_PRIVATE_KEY")
                 .map_err(|_| ConfigError::MissingIssuerPrivateKey)?,
+            initialize_reserve_on_startup: boolean("INITIALIZE_RESERVE_ON_STARTUP", true)?,
         })
+    }
+}
+fn boolean(name: &'static str, default: bool) -> Result<bool, ConfigError> {
+    let raw = env::var(name).unwrap_or_else(|_| default.to_string());
+    match raw.to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" => Ok(true),
+        "false" | "0" | "no" => Ok(false),
+        _ => Err(ConfigError::InvalidReserveInitializationFlag(raw)),
     }
 }

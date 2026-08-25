@@ -3,16 +3,19 @@ use std::sync::Arc;
 use crypto_asset_backend::{
     api,
     application::{
-        CachedTokenQueryService, ChainPollingService, EsgBroadcaster, IssuanceService,
-        ObservationBroadcaster, PollingMonitor, ReserveMonitor, ReservePollingService,
-        SnapshotCache,
+        AssetStateService, CachedTokenQueryService, ChainPollingService, EsgBroadcaster,
+        IssuanceService, ObservationBroadcaster, PollingMonitor, RedemptionService,
+        ReserveInitializer, ReserveMonitor, ReservePollingService, SnapshotCache, TokenReader,
+        initial_reserve_target_minor,
     },
     config::Config,
     infrastructure::{
+        asset_state_sqlite::SqliteAssetStateStore,
         cache::InMemorySnapshotCache,
         ethereum::AlloyTokenReader,
         issuance_sqlite::SqliteIssuanceStore,
         mock_bank_client::{HttpBankTransactionReader, HttpReserveReader},
+        redemption_sqlite::SqliteRedemptionStore,
         sqlite::SqliteEsgStore,
         token_issuer::AlloyTokenIssuer,
     },
@@ -23,9 +26,25 @@ use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    dotenvy::dotenv().ok();
     init_tracing();
     let config = Config::from_env()?;
     let token_reader = AlloyTokenReader::connect(&config.rpc_url, config.token_address).await?;
+    let bank_operations = Arc::new(HttpBankTransactionReader::new(&config.mock_bank_url));
+    if config.initialize_reserve_on_startup {
+        let initial_snapshot = token_reader.read_snapshot().await?;
+        let initial_reserve = initial_reserve_target_minor(
+            &initial_snapshot.total_supply_raw,
+            initial_snapshot.decimals,
+        )?;
+        bank_operations.initialize_reserve(initial_reserve).await?;
+        info!(
+            target_balance_minor = initial_reserve,
+            "issuer initialized mockBank reserve at 110% of token supply"
+        );
+    } else {
+        info!("issuer startup reserve initialization is disabled by configuration");
+    }
     let cache: Arc<dyn SnapshotCache> =
         Arc::new(InMemorySnapshotCache::new(config.cache_retention));
     let monitor = Arc::new(PollingMonitor::new(config.polling_max_staleness));
@@ -44,25 +63,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     tokio::spawn(poller.run());
     let reserve_monitor = ReserveMonitor::new(32);
+    let asset_state_service = Arc::new(AssetStateService::new(
+        Arc::new(SqliteAssetStateStore::open(&config.database_path)?),
+        32,
+    ));
     let reserve_poller = ReservePollingService::new(
         Arc::new(HttpReserveReader::new(&config.mock_bank_url)),
         Arc::clone(&cache),
         reserve_monitor.clone(),
+        asset_state_service.clone(),
         config.poll_interval,
     );
     tokio::spawn(reserve_poller.run());
     let token_service = Arc::new(CachedTokenQueryService::new(cache, monitor));
+    let token_operator = Arc::new(
+        AlloyTokenIssuer::connect(
+            &config.rpc_url,
+            config.token_address,
+            &config.issuer_private_key,
+        )
+        .await?,
+    );
     let issuance_service = Arc::new(IssuanceService::new(
         Arc::new(SqliteIssuanceStore::open(&config.database_path)?),
-        Arc::new(HttpBankTransactionReader::new(&config.mock_bank_url)),
-        Arc::new(
-            AlloyTokenIssuer::connect(
-                &config.rpc_url,
-                config.token_address,
-                &config.issuer_private_key,
-            )
-            .await?,
-        ),
+        bank_operations.clone(),
+        token_operator.clone(),
+    ));
+    let redemption_service = Arc::new(RedemptionService::new(
+        Arc::new(SqliteRedemptionStore::open(&config.database_path)?),
+        token_operator,
+        bank_operations,
     ));
     let app = api::router(
         token_service,
@@ -70,7 +100,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         esg_observations,
         esg_store,
         reserve_monitor,
+        asset_state_service,
         issuance_service,
+        redemption_service,
     );
     let listener = TcpListener::bind(config.http_address).await?;
     info!(address = %config.http_address, "HTTP server started");
