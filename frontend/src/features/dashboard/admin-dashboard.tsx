@@ -2,6 +2,8 @@ import { useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { Activity, Blocks, Building2, CircleDollarSign, Database, ExternalLink, Info, Leaf, Radio, ShieldCheck, TriangleAlert, Zap } from "lucide-react"
 import { reserveQueryOptions } from "@/application/queries/reserve-query"
+import { assetStateQueryOptions } from "@/application/queries/asset-state-query"
+import { useAssetStateStream } from "@/application/realtime/use-asset-state-stream"
 import { useReserveStream } from "@/application/realtime/use-reserve-stream"
 import { esgHistoryQueryOptions, esgQueryOptions } from "@/application/queries/esg-query"
 import { useEsgStream } from "@/application/realtime/use-esg-stream"
@@ -12,6 +14,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Skeleton } from "@/components/ui/skeleton"
 import { Dialog } from "@/components/ui/dialog"
 import { formatTokenAmount, shortenAddress } from "@/domain/token"
+import { assetStateLabel } from "@/domain/asset-state"
 import { SupplyChart } from "./supply-chart"
 import { EsgEnergyChart } from "./esg-energy-chart"
 
@@ -20,10 +23,12 @@ export function AdminDashboard() {
   const esg = useQuery(esgQueryOptions)
   const esgHistory = useQuery(esgHistoryQueryOptions)
   const reserve = useQuery(reserveQueryOptions)
+  const assetState = useQuery(assetStateQueryOptions)
   const [detailsOpen, setDetailsOpen] = useState(false)
   const connection = useTokenStream()
   useEsgStream()
   useReserveStream()
+  useAssetStateStream()
 
   if (token.isPending) return <DashboardLoading />
 
@@ -78,10 +83,14 @@ export function AdminDashboard() {
             <StatusRow label="Ostatni odczyt backendu" value={new Date(observedAtUnixMs).toLocaleTimeString("pl-PL")} />
             <StatusRow label="Cache backendu" value="Pamięć procesu · 24 godz." />
             <StatusRow label="Transport" value="SSE + inicjalizacja HTTP" />
-            <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4 text-xs leading-6 text-slate-400">
-              <ShieldCheck className="mb-2 size-5 text-teal-400" />
-              Panel działa tylko do odczytu. Operacje administracyjne tokenu nie są jeszcze podłączone.
-            </div>
+            {assetState.isPending && <Skeleton className="h-28" />}
+            {assetState.isError && <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-xs text-amber-200">Nie udało się odczytać decyzji emitenta.</div>}
+            {assetState.data && <div className={`rounded-xl border p-4 text-xs leading-6 ${assetStateClasses(assetState.data.state)}`}>
+              <ShieldCheck className="mb-2 size-5" />
+              <div className="flex items-center justify-between gap-3"><strong className="text-sm">{assetStateLabel(assetState.data.state)}</strong><span className="font-mono text-[10px]">{assetState.data.policyVersion}</span></div>
+              <p className="mt-2">{assetState.data.reason}</p>
+              <p className="mt-2 opacity-70">Ostatnia decyzja: {new Date(assetState.data.updatedAtUnixMs).toLocaleString("pl-PL")}</p>
+            </div>}
           </CardContent>
         </Card>
       </section>
@@ -162,4 +171,11 @@ function connectionLabel(connection: "connecting" | "live" | "disconnected") {
     live: "połączono",
     disconnected: "rozłączono",
   }[connection]
+}
+
+function assetStateClasses(state: "active" | "warning" | "mint_blocked" | "data_unavailable" | "wind_down") {
+  if (state === "active") return "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+  if (state === "warning") return "border-amber-500/30 bg-amber-500/10 text-amber-200"
+  if (state === "data_unavailable") return "border-slate-700 bg-slate-900 text-slate-300"
+  return "border-rose-500/30 bg-rose-500/10 text-rose-300"
 }
