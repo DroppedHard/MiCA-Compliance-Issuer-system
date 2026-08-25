@@ -16,14 +16,17 @@ contract ResearchUsdEMT is ERC20Pausable, AccessControl {
 
     mapping(address account => bool frozen) private _frozen;
     mapping(bytes32 operationId => bool processed) private _processedMintOperations;
+    mapping(bytes32 operationId => bool processed) private _processedBurnOperations;
 
     error ZeroAddress();
     error AccountFrozen(address account);
     error MintOperationAlreadyProcessed(bytes32 operationId);
+    error BurnOperationAlreadyProcessed(bytes32 operationId);
 
     event AddressFrozen(address indexed account);
     event AddressUnfrozen(address indexed account);
     event MintOperationExecuted(bytes32 indexed operationId, address indexed recipient, uint256 amount);
+    event BurnOperationExecuted(bytes32 indexed operationId, address indexed holder, uint256 amount);
 
     constructor(address admin) ERC20("Research USD EMT", "rUSD") {
         if (admin == address(0)) revert ZeroAddress();
@@ -55,6 +58,18 @@ contract ResearchUsdEMT is ERC20Pausable, AccessControl {
 
     function isMintOperationProcessed(bytes32 operationId) external view returns (bool) {
         return _processedMintOperations[operationId];
+    }
+
+    /// @notice Executes one backend-correlated redemption burn exactly once.
+    function burnForOperation(bytes32 operationId, address from, uint256 amount) external onlyRole(BURNER_ROLE) {
+        if (_processedBurnOperations[operationId]) revert BurnOperationAlreadyProcessed(operationId);
+        _processedBurnOperations[operationId] = true;
+        _burn(from, amount);
+        emit BurnOperationExecuted(operationId, from, amount);
+    }
+
+    function isBurnOperationProcessed(bytes32 operationId) external view returns (bool) {
+        return _processedBurnOperations[operationId];
     }
 
     function burn(address from, uint256 amount) external onlyRole(BURNER_ROLE) {

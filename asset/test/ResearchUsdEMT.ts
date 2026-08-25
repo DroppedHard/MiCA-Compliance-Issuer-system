@@ -46,4 +46,24 @@ describe("ResearchUsdEMT integration", async function () {
     );
     assert.equal(await token.read.balanceOf([holder.account.address]), amount);
   });
+
+  it("executes a correlated redemption burn exactly once", async function () {
+    const token = await viem.deployContract("ResearchUsdEMT", [admin.account.address]);
+    const operationId = `0x${"22".repeat(32)}` as `0x${string}`;
+    const amount = 10n * 10n ** 6n;
+    await token.write.mint([holder.account.address, amount]);
+    await viem.assertions.emitWithArgs(
+      token.write.burnForOperation([operationId, holder.account.address, amount]),
+      token,
+      "BurnOperationExecuted",
+      [operationId, holder.account.address, amount],
+    );
+    assert.equal(await token.read.isBurnOperationProcessed([operationId]), true);
+    await viem.assertions.revertWithCustomErrorWithArgs(
+      token.write.burnForOperation([operationId, holder.account.address, amount]),
+      token,
+      "BurnOperationAlreadyProcessed",
+      [operationId],
+    );
+  });
 });
