@@ -2,7 +2,7 @@ use crate::{
     application::{
         AssetStateService, CachedTokenQueryService, CreateIssuance, EsgBroadcaster, EsgStore,
         IssuanceError, IssuanceService, ObservationBroadcaster, QueryError, RedemptionError,
-        RedemptionService, ReserveMonitor,
+        RedemptionService, ReserveMonitor, WindDownError, WindDownService,
     },
     domain::{AssetState, EsgHistory, EsgObservation, ReserveCoverage, TokenObservation},
 };
@@ -31,6 +31,7 @@ struct AppState {
     asset_state_service: Arc<AssetStateService>,
     issuance_service: Arc<IssuanceService>,
     redemption_service: Arc<RedemptionService>,
+    wind_down_service: Arc<WindDownService>,
 }
 
 pub struct RouterDependencies {
@@ -42,6 +43,7 @@ pub struct RouterDependencies {
     pub asset_state_service: Arc<AssetStateService>,
     pub issuance_service: Arc<IssuanceService>,
     pub redemption_service: Arc<RedemptionService>,
+    pub wind_down_service: Arc<WindDownService>,
 }
 
 pub fn router(dependencies: RouterDependencies) -> Router {
@@ -81,6 +83,7 @@ pub fn router(dependencies: RouterDependencies) -> Router {
             asset_state_service: dependencies.asset_state_service,
             issuance_service: dependencies.issuance_service,
             redemption_service: dependencies.redemption_service,
+            wind_down_service: dependencies.wind_down_service,
         })
 }
 
@@ -112,6 +115,7 @@ async fn asset_state_stream(
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct WindDownRequest {
+    operation_id: String,
     reason: String,
 }
 
@@ -119,16 +123,12 @@ async fn enter_wind_down(
     State(state): State<AppState>,
     Json(request): Json<WindDownRequest>,
 ) -> Result<Json<AssetState>, ApiError> {
-    if request.reason.trim().is_empty() {
-        return Err(ApiError::BadRequest(
-            "wind-down reason cannot be empty".into(),
-        ));
-    }
     state
-        .asset_state_service
-        .enter_wind_down(request.reason)
+        .wind_down_service
+        .enter(&request.operation_id, &request.reason)
+        .await
         .map(Json)
-        .map_err(|error| ApiError::Internal(error.to_string()))
+        .map_err(ApiError::from)
 }
 
 #[derive(Deserialize)]
@@ -384,6 +384,19 @@ impl From<RedemptionError> for ApiError {
     }
 }
 
+impl From<WindDownError> for ApiError {
+    fn from(error: WindDownError) -> Self {
+        match error {
+            WindDownError::Invalid(_) => Self::BadRequest(error.to_string()),
+            WindDownError::IdempotencyConflict => Self::Conflict(error.to_string()),
+            WindDownError::Blockchain(_) => Self::Unavailable(error.to_string()),
+            WindDownError::State(_) | WindDownError::Storage(_) => {
+                Self::Internal(error.to_string())
+            }
+        }
+    }
+}
+
 impl From<QueryError> for ApiError {
     fn from(error: QueryError) -> Self {
         match error {
@@ -401,6 +414,7 @@ mod tests {
         application::{
             BankTransactionReader, ConfirmedBankTransaction, IssuanceStore, MintResult,
             OperationGate, PayoutBank, PollingMonitor, RedemptionToken, SnapshotCache, TokenIssuer,
+            TokenLifecycle,
         },
         config::esg,
         domain::{EsgObservation, IssuanceOrder},
@@ -477,6 +491,12 @@ mod tests {
         }
     }
     #[async_trait]
+    impl TokenLifecycle for TestToken {
+        async fn enter_wind_down(&self) -> Result<Option<String>, WindDownError> {
+            Ok(Some("0xwinddown".into()))
+        }
+    }
+    #[async_trait]
     impl PayoutBank for TestBank {
         async fn pay_usd(&self, _: &str, _: u64) -> Result<(), RedemptionError> {
             Ok(())
@@ -519,6 +539,24 @@ mod tests {
             operation_gate(),
         ))
     }
+    fn wind_down_service() -> Arc<WindDownService> {
+        Arc::new(WindDownService::new(
+            Arc::new(AssetStateService::new(
+                Arc::new(
+                    crate::infrastructure::asset_state_sqlite::SqliteAssetStateStore::open(
+                        ":memory:",
+                    )
+                    .unwrap(),
+                ),
+                4,
+            )),
+            Arc::new(TestToken),
+            Arc::new(
+                crate::infrastructure::wind_down_sqlite::SqliteWindDownAuditStore::open(":memory:")
+                    .unwrap(),
+            ),
+        ))
+    }
 
     fn test_router(esg: EsgBroadcaster) -> Router {
         let store: Arc<dyn EsgStore> =
@@ -550,6 +588,7 @@ mod tests {
             )),
             issuance_service: issuance_service(),
             redemption_service: redemption_service(),
+            wind_down_service: wind_down_service(),
         })
     }
 
@@ -583,6 +622,29 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["state"], "data_unavailable");
         assert_eq!(json["policyVersion"], "reserve-coverage-v1");
+    }
+
+    #[tokio::test]
+    async fn wind_down_endpoint_waits_for_executor_and_returns_terminal_state() {
+        let response = test_router(EsgBroadcaster::new(4))
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/admin/asset-state/wind-down")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"operationId":"wind-api-1","reason":"authority decision"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: AssetState = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value.state, crate::domain::AssetStateCode::WindDown);
     }
 
     #[tokio::test]

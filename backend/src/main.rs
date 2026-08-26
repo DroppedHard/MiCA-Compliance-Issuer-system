@@ -6,7 +6,7 @@ use crypto_asset_backend::{
         AssetStateService, CachedTokenQueryService, ChainPollingService, EsgBroadcaster,
         IssuanceService, ObservationBroadcaster, OperationGate, PollingMonitor, RedemptionService,
         ReserveInitializer, ReserveMonitor, ReservePollingService, SnapshotCache, TokenReader,
-        initial_reserve_target_minor,
+        WindDownService, initial_reserve_target_minor,
     },
     config::Config,
     infrastructure::{
@@ -19,6 +19,7 @@ use crypto_asset_backend::{
         redemption_sqlite::SqliteRedemptionStore,
         sqlite::SqliteEsgStore,
         token_issuer::AlloyTokenIssuer,
+        wind_down_sqlite::SqliteWindDownAuditStore,
     },
 };
 use tokio::net::TcpListener;
@@ -97,10 +98,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
     let redemption_service = Arc::new(RedemptionService::new(
         Arc::new(SqliteRedemptionStore::open(&config.database_path)?),
-        token_operator,
+        token_operator.clone(),
         bank_operations,
         asset_state_service.clone(),
         operation_gate,
+    ));
+    let wind_down_service = Arc::new(WindDownService::new(
+        asset_state_service.clone(),
+        token_operator,
+        Arc::new(SqliteWindDownAuditStore::open(&config.database_path)?),
     ));
     let app = api::router(api::RouterDependencies {
         token_service,
@@ -111,6 +117,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         asset_state_service,
         issuance_service,
         redemption_service,
+        wind_down_service,
     });
     let listener = TcpListener::bind(config.http_address).await?;
     info!(address = %config.http_address, "HTTP server started");

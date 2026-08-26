@@ -1,5 +1,6 @@
 use crate::application::{
-    IssuanceError, MintResult, RedemptionError, RedemptionToken, TokenIssuer,
+    IssuanceError, MintResult, RedemptionError, RedemptionToken, TokenIssuer, TokenLifecycle,
+    WindDownError,
 };
 use alloy::{
     primitives::{Address, U256, keccak256},
@@ -16,6 +17,8 @@ sol! {
         function isMintOperationProcessed(bytes32 operationId) external view returns (bool);
         function burnForOperation(bytes32 operationId, address holder, uint256 amount) external;
         function isBurnOperationProcessed(bytes32 operationId) external view returns (bool);
+        function enterWindDown() external;
+        function windDown() external view returns (bool);
     }
 }
 #[async_trait]
@@ -104,9 +107,31 @@ impl TokenIssuer for AlloyTokenIssuer {
         })
     }
 }
+
+#[async_trait]
+impl TokenLifecycle for AlloyTokenIssuer {
+    async fn enter_wind_down(&self) -> Result<Option<String>, WindDownError> {
+        let contract = IssuanceToken::new(self.token_address, &self.provider);
+        if contract.windDown().call().await.map_err(wind_down_chain)? {
+            return Ok(None);
+        }
+        let receipt = contract
+            .enterWindDown()
+            .send()
+            .await
+            .map_err(wind_down_chain)?
+            .get_receipt()
+            .await
+            .map_err(wind_down_chain)?;
+        Ok(Some(receipt.transaction_hash.to_string()))
+    }
+}
 fn chain(error: impl std::fmt::Display) -> IssuanceError {
     IssuanceError::Blockchain(error.to_string())
 }
 fn redemption_chain(error: impl std::fmt::Display) -> RedemptionError {
     RedemptionError::Blockchain(error.to_string())
+}
+fn wind_down_chain(error: impl std::fmt::Display) -> WindDownError {
+    WindDownError::Blockchain(error.to_string())
 }

@@ -6,6 +6,7 @@ mod ports;
 mod redemption;
 mod reserves;
 mod token_query;
+mod wind_down;
 pub use asset_state::{
     ASSET_STATE_POLICY_VERSION, AssetStateError, AssetStateService, AssetStateStore,
     evaluate as evaluate_asset_state,
@@ -31,3 +32,6 @@ pub use reserves::{
     calculate_coverage, initial_reserve_target_minor,
 };
 pub use token_query::{CachedTokenQueryService, QueryError};
+pub use wind_down::{
+    TokenLifecycle, WindDownAudit, WindDownAuditStore, WindDownError, WindDownService,
+};

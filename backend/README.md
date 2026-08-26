@@ -14,7 +14,7 @@ Run the main backend in another terminal as before. It polls `http://127.0.0.1:3
 
 The same polling result drives the persisted issuer-owned asset assessment. Read it with `GET /api/v1/asset-state` or subscribe to `/api/v1/asset-state/stream` (SSE event `asset-state`). Policy `reserve-coverage-v1` maps coverage of at least 105% to `active`, 100–105% to `warning`, below 100% to `mint_blocked`, and missing evidence to `data_unavailable`. The frontend does not reproduce these rules.
 
-For the later wind-down scenario, the demo-only administrative command is `POST /api/v1/admin/asset-state/wind-down` with JSON such as `{"reason":"supervisory wind-down simulation"}`. It persists a terminal `wind_down` decision. At the current roadmap stage this does not yet change the smart contract; on-chain enforcement is deliberately tracked separately.
+The demo-only administrative command `POST /api/v1/admin/asset-state/wind-down` accepts JSON such as `{"operationId":"wind-down-demo-1","reason":"supervisory wind-down simulation"}`. The backend submits the terminal on-chain command, waits for confirmation, persists `wind_down` and appends the operation ID, reason and transaction hash to `wind_down_audit`. The contract then blocks mint and ordinary transfers while preserving authorised redemption burns. Redeploy the local contract after pulling this contract revision.
 
 Simulate a USD deposit:
 

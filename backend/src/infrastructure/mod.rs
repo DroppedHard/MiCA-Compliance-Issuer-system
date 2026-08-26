@@ -7,3 +7,4 @@ pub mod operation_decision_sqlite;
 pub mod redemption_sqlite;
 pub mod sqlite;
 pub mod token_issuer;
+pub mod wind_down_sqlite;
