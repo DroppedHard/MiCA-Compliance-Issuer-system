@@ -17,6 +17,7 @@ import { formatTokenAmount, shortenAddress } from "@/domain/token"
 import { assetStateLabel } from "@/domain/asset-state"
 import { SupplyChart } from "./supply-chart"
 import { EsgEnergyChart } from "./esg-energy-chart"
+import { WindDownControl } from "./wind-down-control"
 
 export function AdminDashboard() {
   const token = useQuery(tokenQueryOptions)
@@ -55,7 +56,7 @@ export function AdminDashboard() {
         <div>
           <p className="mb-2 font-mono text-xs uppercase tracking-[0.28em] text-teal-400">Środowisko badawcze</p>
           <h1 className="text-3xl font-semibold tracking-tight text-white md:text-4xl">Panel zarządzania EMT</h1>
-          <p className="mt-2 max-w-2xl text-slate-400">Bieżący podgląd lokalnie wdrożonego kryptoaktywa w trybie tylko do odczytu.</p>
+          <p className="mt-2 max-w-2xl text-slate-400">Bieżący podgląd lokalnie wdrożonego kryptoaktywa oraz demonstracyjne sterowanie jego cyklem życia.</p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
           <a href="/client" className="inline-flex items-center gap-2 rounded-lg border border-slate-700 px-3 py-2 text-xs font-medium text-slate-300 transition hover:border-teal-400/40 hover:bg-teal-400/10 hover:text-teal-200">Widok klienta <ExternalLink className="size-3.5" /></a>
@@ -90,6 +91,7 @@ export function AdminDashboard() {
               <div className="flex items-center justify-between gap-3"><strong className="text-sm">{assetStateLabel(assetState.data.state)}</strong><span className="font-mono text-[10px]">{assetState.data.policyVersion}</span></div>
               <p className="mt-2">{assetState.data.reason}</p>
               <p className="mt-2 opacity-70">Ostatnia decyzja: {new Date(assetState.data.updatedAtUnixMs).toLocaleString("pl-PL")}</p>
+              <WindDownControl state={assetState.data.state} />
             </div>}
           </CardContent>
         </Card>
