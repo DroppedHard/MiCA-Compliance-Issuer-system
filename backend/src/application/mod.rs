@@ -10,8 +10,9 @@ pub use asset_state::{
     evaluate as evaluate_asset_state,
 };
 pub use issuance::{
-    BankTransactionReader, ConfirmedBankTransaction, CreateIssuance, IssuanceError,
-    IssuanceService, IssuanceStore, MintResult, TokenIssuer,
+    BankTransactionReader, ConfirmedBankTransaction, CreateIssuance,
+    ISSUANCE_COVERAGE_POLICY_VERSION, IssuanceError, IssuanceEvidenceReader, IssuanceService,
+    IssuanceStore, MintResult, TokenIssuer, evaluate_projected_coverage,
 };
 pub use polling::{
     ChainPollingService, EsgBroadcaster, ObservationBroadcaster, PollingError, PollingMonitor,

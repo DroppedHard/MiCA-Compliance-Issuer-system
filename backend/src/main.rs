@@ -13,6 +13,7 @@ use crypto_asset_backend::{
         asset_state_sqlite::SqliteAssetStateStore,
         cache::InMemorySnapshotCache,
         ethereum::AlloyTokenReader,
+        issuance_evidence::LiveIssuanceEvidenceReader,
         issuance_sqlite::SqliteIssuanceStore,
         mock_bank_client::{HttpBankTransactionReader, HttpReserveReader},
         redemption_sqlite::SqliteRedemptionStore,
@@ -29,7 +30,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenvy::dotenv().ok();
     init_tracing();
     let config = Config::from_env()?;
-    let token_reader = AlloyTokenReader::connect(&config.rpc_url, config.token_address).await?;
+    let token_reader: Arc<dyn TokenReader> =
+        Arc::new(AlloyTokenReader::connect(&config.rpc_url, config.token_address).await?);
     let bank_operations = Arc::new(HttpBankTransactionReader::new(&config.mock_bank_url));
     if config.initialize_reserve_on_startup {
         let initial_snapshot = token_reader.read_snapshot().await?;
@@ -53,7 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let esg_store: Arc<dyn crypto_asset_backend::application::EsgStore> =
         Arc::new(SqliteEsgStore::open(&config.database_path)?);
     let poller = ChainPollingService::new(
-        Arc::new(token_reader),
+        token_reader.clone(),
         Arc::clone(&cache),
         Arc::clone(&monitor),
         config.poll_interval,
@@ -67,8 +69,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::new(SqliteAssetStateStore::open(&config.database_path)?),
         32,
     ));
+    let reserve_reader: Arc<dyn crypto_asset_backend::application::ReserveReader> =
+        Arc::new(HttpReserveReader::new(&config.mock_bank_url));
     let reserve_poller = ReservePollingService::new(
-        Arc::new(HttpReserveReader::new(&config.mock_bank_url)),
+        reserve_reader.clone(),
         Arc::clone(&cache),
         reserve_monitor.clone(),
         asset_state_service.clone(),
@@ -88,13 +92,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::new(SqliteIssuanceStore::open(&config.database_path)?),
         bank_operations.clone(),
         token_operator.clone(),
+        Arc::new(LiveIssuanceEvidenceReader::new(
+            token_reader,
+            reserve_reader,
+        )),
+        asset_state_service.clone(),
     ));
     let redemption_service = Arc::new(RedemptionService::new(
         Arc::new(SqliteRedemptionStore::open(&config.database_path)?),
         token_operator,
         bank_operations,
     ));
-    let app = api::router(
+    let app = api::router(api::RouterDependencies {
         token_service,
         observations,
         esg_observations,
@@ -103,7 +112,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         asset_state_service,
         issuance_service,
         redemption_service,
-    );
+    });
     let listener = TcpListener::bind(config.http_address).await?;
     info!(address = %config.http_address, "HTTP server started");
     axum::serve(listener, app).await?;

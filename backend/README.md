@@ -36,6 +36,8 @@ Amounts use US cents and idempotency keys prevent repeated requests from being a
 
 The issuer exposes a durable, idempotent purchase workflow. Creating an order does not mint tokens. Settlement succeeds only after mockBank contains a matching USD deposit, and the contract records the issuance operation identifier so a retry cannot mint twice.
 
+Immediately before every mint, the backend bypasses the polling cache and reads fresh token supply from Ethereum plus the current aggregate mockBank balance. Policy `issuance-coverage-v1` reconstructs the pre-operation reserve by subtracting this operation's confirmed deposit, then evaluates `(pre-operation reserve + confirmed deposit) / (current supply + proposed mint)`. This avoids counting the deposit twice. A result below 100% returns HTTP 409, leaves the order outside `minting`, records the complete decision evidence in `issuance_coverage_decisions`, and moves the issuer assessment to `mint_blocked`. Missing live evidence fails closed with HTTP 503. The normal reserve poller can restore the derived state after the reserve has been corrected.
+
 Start by creating the order:
 
 ```powershell

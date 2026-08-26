@@ -33,16 +33,18 @@ struct AppState {
     redemption_service: Arc<RedemptionService>,
 }
 
-pub fn router(
-    token_service: Arc<CachedTokenQueryService>,
-    observations: ObservationBroadcaster,
-    esg_observations: EsgBroadcaster,
-    esg_store: Arc<dyn EsgStore>,
-    reserve_monitor: ReserveMonitor,
-    asset_state_service: Arc<AssetStateService>,
-    issuance_service: Arc<IssuanceService>,
-    redemption_service: Arc<RedemptionService>,
-) -> Router {
+pub struct RouterDependencies {
+    pub token_service: Arc<CachedTokenQueryService>,
+    pub observations: ObservationBroadcaster,
+    pub esg_observations: EsgBroadcaster,
+    pub esg_store: Arc<dyn EsgStore>,
+    pub reserve_monitor: ReserveMonitor,
+    pub asset_state_service: Arc<AssetStateService>,
+    pub issuance_service: Arc<IssuanceService>,
+    pub redemption_service: Arc<RedemptionService>,
+}
+
+pub fn router(dependencies: RouterDependencies) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/api/v1/token", get(token_snapshot))
@@ -71,14 +73,14 @@ pub fn router(
             post(settle_redemption),
         )
         .with_state(AppState {
-            token_service,
-            observations,
-            esg_observations,
-            esg_store,
-            reserve_monitor,
-            asset_state_service,
-            issuance_service,
-            redemption_service,
+            token_service: dependencies.token_service,
+            observations: dependencies.observations,
+            esg_observations: dependencies.esg_observations,
+            esg_store: dependencies.esg_store,
+            reserve_monitor: dependencies.reserve_monitor,
+            asset_state_service: dependencies.asset_state_service,
+            issuance_service: dependencies.issuance_service,
+            redemption_service: dependencies.redemption_service,
         })
 }
 
@@ -359,8 +361,11 @@ impl From<IssuanceError> for ApiError {
             IssuanceError::IdempotencyConflict
             | IssuanceError::FiatNotConfirmed
             | IssuanceError::BankMismatch
-            | IssuanceError::SettlementInProgress => Self::Conflict(error.to_string()),
-            IssuanceError::Bank(_) => Self::Unavailable(error.to_string()),
+            | IssuanceError::SettlementInProgress
+            | IssuanceError::ProjectedCoverage(_) => Self::Conflict(error.to_string()),
+            IssuanceError::Bank(_) | IssuanceError::CoverageUnavailable(_) => {
+                Self::Unavailable(error.to_string())
+            }
             IssuanceError::Storage(_) | IssuanceError::Blockchain(_) => {
                 Self::Internal(error.to_string())
             }
@@ -433,6 +438,12 @@ mod tests {
         fn fail(&self, _: &str, _: &str) -> Result<(), IssuanceError> {
             Ok(())
         }
+        fn record_coverage_decision(
+            &self,
+            _: &crate::domain::IssuanceCoverageDecision,
+        ) -> Result<(), IssuanceError> {
+            Ok(())
+        }
     }
     struct TestBank;
     #[async_trait]
@@ -442,6 +453,33 @@ mod tests {
         }
     }
     struct TestToken;
+    struct TestEvidence;
+    #[async_trait]
+    impl crate::application::IssuanceEvidenceReader for TestEvidence {
+        async fn read(
+            &self,
+        ) -> Result<(crate::domain::TokenSnapshot, crate::domain::BankReserve), IssuanceError>
+        {
+            Ok((
+                crate::domain::TokenSnapshot {
+                    chain_id: 31337,
+                    block_number: 1,
+                    contract_address: "0x1".into(),
+                    name: "rUSD".into(),
+                    symbol: "rUSD".into(),
+                    decimals: 6,
+                    total_supply_raw: "0".into(),
+                },
+                crate::domain::BankReserve {
+                    account_id: "reserve-rusd".into(),
+                    currency: "USD".into(),
+                    balance_minor: "1250".into(),
+                    version: 1,
+                    as_of_unix_ms: 1,
+                },
+            ))
+        }
+    }
     #[async_trait]
     impl TokenIssuer for TestToken {
         async fn mint_for_operation(
@@ -471,10 +509,19 @@ mod tests {
         }
     }
     fn issuance_service() -> Arc<IssuanceService> {
+        let state = Arc::new(AssetStateService::new(
+            Arc::new(
+                crate::infrastructure::asset_state_sqlite::SqliteAssetStateStore::open(":memory:")
+                    .unwrap(),
+            ),
+            4,
+        ));
         Arc::new(IssuanceService::new(
             Arc::new(TestIssuanceStore(Mutex::new(None))),
             Arc::new(TestBank),
             Arc::new(TestToken),
+            Arc::new(TestEvidence),
+            state,
         ))
     }
     fn redemption_service() -> Arc<RedemptionService> {
@@ -501,13 +548,13 @@ mod tests {
             cache,
             Arc::new(PollingMonitor::new(Duration::from_secs(30))),
         ));
-        router(
-            service,
-            ObservationBroadcaster::new(4),
-            esg,
-            store,
-            ReserveMonitor::new(4),
-            Arc::new(AssetStateService::new(
+        router(RouterDependencies {
+            token_service: service,
+            observations: ObservationBroadcaster::new(4),
+            esg_observations: esg,
+            esg_store: store,
+            reserve_monitor: ReserveMonitor::new(4),
+            asset_state_service: Arc::new(AssetStateService::new(
                 Arc::new(
                     crate::infrastructure::asset_state_sqlite::SqliteAssetStateStore::open(
                         ":memory:",
@@ -516,9 +563,9 @@ mod tests {
                 ),
                 4,
             )),
-            issuance_service(),
-            redemption_service(),
-        )
+            issuance_service: issuance_service(),
+            redemption_service: redemption_service(),
+        })
     }
 
     #[tokio::test]

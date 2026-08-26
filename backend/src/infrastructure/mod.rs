@@ -1,6 +1,7 @@
 pub mod asset_state_sqlite;
 pub mod cache;
 pub mod ethereum;
+pub mod issuance_evidence;
 pub mod issuance_sqlite;
 pub mod mock_bank_client;
 pub mod redemption_sqlite;

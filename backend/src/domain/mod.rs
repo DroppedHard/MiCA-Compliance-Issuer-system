@@ -6,7 +6,7 @@ mod reserve;
 mod token;
 pub use asset_state::{AssetState, AssetStateCode};
 pub use esg::{EsgEstimate, EsgHistory, EsgMethodology, EsgObservation};
-pub use issuance::{IssuanceOrder, IssuanceStatus};
+pub use issuance::{CoverageDecisionCode, IssuanceCoverageDecision, IssuanceOrder, IssuanceStatus};
 pub use redemption::{RedemptionOrder, RedemptionStatus};
 pub use reserve::{BankReserve, CoverageStatus, ReserveCoverage};
 pub use token::{TokenObservation, TokenSnapshot};
