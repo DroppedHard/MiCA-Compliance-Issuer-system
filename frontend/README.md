@@ -68,10 +68,9 @@ Open `http://127.0.0.1:5173`. Vite proxies `/api` and `/health` to `http://127.0
 Available views:
 
 - `http://127.0.0.1:5173/` — administrator monitoring dashboard;
-- `http://127.0.0.1:5173/client` — temporary customer mock retained during the folder move. It will migrate to the CASP frontend when that application is implemented.
+- `http://127.0.0.1:5173/white-paper` — public issuer-owned HTML information document with browser print-to-PDF support.
 
-The customer view currently demonstrates the planned UX only. Wallet, payment,
-escrow and transaction buttons do not yet submit real operations.
+The white-paper publication manifest is append-only in `src/features/white-paper/content.ts`. A material revision adds a new timestamped version and marks the previous publication as superseded instead of deleting it. Live contract, reserve, asset-state and ESG values are loaded from the issuer backend.
 
 Expected behavior:
 
