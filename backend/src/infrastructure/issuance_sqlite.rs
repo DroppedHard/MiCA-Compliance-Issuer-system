@@ -1,6 +1,6 @@
 use crate::{
     application::{IssuanceError, IssuanceStore},
-    domain::{CoverageDecisionCode, IssuanceCoverageDecision, IssuanceOrder, IssuanceStatus},
+    domain::{IssuanceOrder, IssuanceStatus},
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use std::{fs, path::Path, sync::Mutex};
@@ -17,9 +17,6 @@ impl SqliteIssuanceStore {
         let connection = Connection::open(path).map_err(storage)?;
         connection
             .execute_batch(include_str!("../../migrations/0002_issuance.sql"))
-            .map_err(storage)?;
-        connection
-            .execute_batch(include_str!("../../migrations/0005_issuance_coverage.sql"))
             .map_err(storage)?;
         Ok(Self {
             connection: Mutex::new(connection),
@@ -78,25 +75,6 @@ impl IssuanceStore for SqliteIssuanceStore {
     fn fail(&self, operation_id: &str, message: &str) -> Result<(), IssuanceError> {
         self.connection.lock().map_err(storage)?.execute("UPDATE issuance_orders SET status='failed',last_error=?1,updated_at_unix_ms=?2 WHERE operation_id=?3",params![message,unix_ms() as i64,operation_id]).map_err(storage)?;
         Ok(())
-    }
-
-    fn record_coverage_decision(
-        &self,
-        decision: &IssuanceCoverageDecision,
-    ) -> Result<(), IssuanceError> {
-        self.connection.lock().map_err(storage)?.execute(
-            "INSERT INTO issuance_coverage_decisions(operation_id,decision,reason,current_reserve_minor,pre_operation_reserve_minor,confirmed_incoming_minor,current_supply_raw,proposed_mint_raw,current_coverage_bps,projected_coverage_bps,evidence_block_number,bank_as_of_unix_ms,policy_version,evaluated_at_unix_ms) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
-            params![decision.operation_id, decision_code(decision.decision), decision.reason, decision.current_reserve_minor, decision.pre_operation_reserve_minor, decision.confirmed_incoming_minor, decision.current_supply_raw, decision.proposed_mint_raw, decision.current_coverage_bps, decision.projected_coverage_bps, decision.evidence_block_number.map(|v| v as i64), decision.bank_as_of_unix_ms.map(|v| v as i64), decision.policy_version, decision.evaluated_at_unix_ms as i64],
-        ).map_err(storage)?;
-        Ok(())
-    }
-}
-
-fn decision_code(value: CoverageDecisionCode) -> &'static str {
-    match value {
-        CoverageDecisionCode::Accepted => "accepted",
-        CoverageDecisionCode::Rejected => "rejected",
-        CoverageDecisionCode::DataUnavailable => "data_unavailable",
     }
 }
 
@@ -165,35 +143,5 @@ mod tests {
             store.complete("op-1", Some("0xabc")).unwrap().status,
             IssuanceStatus::Completed
         );
-
-        store
-            .record_coverage_decision(&IssuanceCoverageDecision {
-                operation_id: "op-1".into(),
-                decision: CoverageDecisionCode::Accepted,
-                reason: "covered".into(),
-                current_reserve_minor: Some("110".into()),
-                pre_operation_reserve_minor: Some("100".into()),
-                confirmed_incoming_minor: "10".into(),
-                current_supply_raw: Some("1000000".into()),
-                proposed_mint_raw: "100000".into(),
-                current_coverage_bps: Some("11000".into()),
-                projected_coverage_bps: Some("10000".into()),
-                evidence_block_number: Some(7),
-                bank_as_of_unix_ms: Some(8),
-                policy_version: "issuance-coverage-v1".into(),
-                evaluated_at_unix_ms: 9,
-            })
-            .unwrap();
-        let count: i64 = store
-            .connection
-            .lock()
-            .unwrap()
-            .query_row(
-                "SELECT COUNT(*) FROM issuance_coverage_decisions",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(count, 1);
     }
 }

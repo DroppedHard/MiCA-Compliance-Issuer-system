@@ -84,25 +84,6 @@ impl AssetStateService {
         })
     }
 
-    pub fn block_mint(
-        &self,
-        reason: impl Into<String>,
-        projected_coverage_percent: Option<f64>,
-        evidence_at_unix_ms: Option<u64>,
-    ) -> Result<AssetState, AssetStateError> {
-        if self.current()?.state == AssetStateCode::WindDown {
-            return self.current();
-        }
-        self.persist_and_publish(AssetState {
-            state: AssetStateCode::MintBlocked,
-            reason: reason.into(),
-            reserve_coverage_percent: projected_coverage_percent,
-            evidence_at_unix_ms,
-            policy_version: ASSET_STATE_POLICY_VERSION.into(),
-            updated_at_unix_ms: unix_ms(),
-        })
-    }
-
     fn persist_and_publish(&self, state: AssetState) -> Result<AssetState, AssetStateError> {
         self.store.save(&state)?;
         let _ = self.sender.send(state.clone());

@@ -4,7 +4,7 @@ use crypto_asset_backend::{
     api,
     application::{
         AssetStateService, CachedTokenQueryService, ChainPollingService, EsgBroadcaster,
-        IssuanceService, ObservationBroadcaster, PollingMonitor, RedemptionService,
+        IssuanceService, ObservationBroadcaster, OperationGate, PollingMonitor, RedemptionService,
         ReserveInitializer, ReserveMonitor, ReservePollingService, SnapshotCache, TokenReader,
         initial_reserve_target_minor,
     },
@@ -13,9 +13,9 @@ use crypto_asset_backend::{
         asset_state_sqlite::SqliteAssetStateStore,
         cache::InMemorySnapshotCache,
         ethereum::AlloyTokenReader,
-        issuance_evidence::LiveIssuanceEvidenceReader,
         issuance_sqlite::SqliteIssuanceStore,
         mock_bank_client::{HttpBankTransactionReader, HttpReserveReader},
+        operation_decision_sqlite::SqliteOperationDecisionStore,
         redemption_sqlite::SqliteRedemptionStore,
         sqlite::SqliteEsgStore,
         token_issuer::AlloyTokenIssuer,
@@ -30,8 +30,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenvy::dotenv().ok();
     init_tracing();
     let config = Config::from_env()?;
-    let token_reader: Arc<dyn TokenReader> =
-        Arc::new(AlloyTokenReader::connect(&config.rpc_url, config.token_address).await?);
+    let token_reader = AlloyTokenReader::connect(&config.rpc_url, config.token_address).await?;
     let bank_operations = Arc::new(HttpBankTransactionReader::new(&config.mock_bank_url));
     if config.initialize_reserve_on_startup {
         let initial_snapshot = token_reader.read_snapshot().await?;
@@ -55,7 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let esg_store: Arc<dyn crypto_asset_backend::application::EsgStore> =
         Arc::new(SqliteEsgStore::open(&config.database_path)?);
     let poller = ChainPollingService::new(
-        token_reader.clone(),
+        Arc::new(token_reader),
         Arc::clone(&cache),
         Arc::clone(&monitor),
         config.poll_interval,
@@ -69,10 +68,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::new(SqliteAssetStateStore::open(&config.database_path)?),
         32,
     ));
-    let reserve_reader: Arc<dyn crypto_asset_backend::application::ReserveReader> =
-        Arc::new(HttpReserveReader::new(&config.mock_bank_url));
     let reserve_poller = ReservePollingService::new(
-        reserve_reader.clone(),
+        Arc::new(HttpReserveReader::new(&config.mock_bank_url)),
         Arc::clone(&cache),
         reserve_monitor.clone(),
         asset_state_service.clone(),
@@ -88,20 +85,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await?,
     );
+    let operation_gate = Arc::new(OperationGate::new(Arc::new(
+        SqliteOperationDecisionStore::open(&config.database_path)?,
+    )));
     let issuance_service = Arc::new(IssuanceService::new(
         Arc::new(SqliteIssuanceStore::open(&config.database_path)?),
         bank_operations.clone(),
         token_operator.clone(),
-        Arc::new(LiveIssuanceEvidenceReader::new(
-            token_reader,
-            reserve_reader,
-        )),
         asset_state_service.clone(),
+        operation_gate.clone(),
     ));
     let redemption_service = Arc::new(RedemptionService::new(
         Arc::new(SqliteRedemptionStore::open(&config.database_path)?),
         token_operator,
         bank_operations,
+        asset_state_service.clone(),
+        operation_gate,
     ));
     let app = api::router(api::RouterDependencies {
         token_service,

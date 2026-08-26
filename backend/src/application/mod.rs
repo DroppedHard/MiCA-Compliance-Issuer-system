@@ -1,5 +1,6 @@
 mod asset_state;
 mod issuance;
+mod operation_gate;
 mod polling;
 mod ports;
 mod redemption;
@@ -10,9 +11,12 @@ pub use asset_state::{
     evaluate as evaluate_asset_state,
 };
 pub use issuance::{
-    BankTransactionReader, ConfirmedBankTransaction, CreateIssuance,
-    ISSUANCE_COVERAGE_POLICY_VERSION, IssuanceError, IssuanceEvidenceReader, IssuanceService,
-    IssuanceStore, MintResult, TokenIssuer, evaluate_projected_coverage,
+    BankTransactionReader, ConfirmedBankTransaction, CreateIssuance, IssuanceError,
+    IssuanceService, IssuanceStore, MintResult, TokenIssuer,
+};
+pub use operation_gate::{
+    OPERATION_GATE_POLICY_VERSION, OperationDecisionStore, OperationGate, OperationGateError,
+    evaluate_operation,
 };
 pub use polling::{
     ChainPollingService, EsgBroadcaster, ObservationBroadcaster, PollingError, PollingMonitor,

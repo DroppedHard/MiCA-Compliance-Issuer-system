@@ -36,7 +36,9 @@ Amounts use US cents and idempotency keys prevent repeated requests from being a
 
 The issuer exposes a durable, idempotent purchase workflow. Creating an order does not mint tokens. Settlement succeeds only after mockBank contains a matching USD deposit, and the contract records the issuance operation identifier so a retry cannot mint twice.
 
-Immediately before every mint, the backend bypasses the polling cache and reads fresh token supply from Ethereum plus the current aggregate mockBank balance. Policy `issuance-coverage-v1` reconstructs the pre-operation reserve by subtracting this operation's confirmed deposit, then evaluates `(pre-operation reserve + confirmed deposit) / (current supply + proposed mint)`. This avoids counting the deposit twice. A result below 100% returns HTTP 409, leaves the order outside `minting`, records the complete decision evidence in `issuance_coverage_decisions`, and moves the issuer assessment to `mint_blocked`. Missing live evidence fails closed with HTTP 503. The normal reserve poller can restore the derived state after the reserve has been corrected.
+The pre-mint gate deliberately stays simple. The confirmed deposit must match the order amount and reference exactly. The persisted issuer state must be `active` or `warning`; `mint_blocked`, `data_unavailable` and `wind_down` reject settlement before the order enters `minting`. The backend does not calculate projected coverage for a normal purchase because the demo adds USD reserve and rUSD liability at the same 1:1 value. Reserve deterioration is detected by the independent periodic observer.
+
+Issuance and redemption settlement now share the `issuer-operation-gate-v1` application boundary while retaining different policies. Every evaluation is appended to the `issuer_operation_decisions` SQLite table with its evidence and reason. HTTP handlers do not reproduce these rules.
 
 Start by creating the order:
 
@@ -266,6 +268,8 @@ The CASP uses the following idempotent issuer boundary:
 - `POST /api/v1/redemption-orders/{operationId}/settle` burns rUSD from the supplied holder wallet and records the corresponding mockBank USD withdrawal.
 
 The contract correlates every burn with the operation ID and rejects a second burn for the same identifier. The backend persists progress, so a retry after the burn but before the mockBank response resumes the payout without burning again. This is a demo saga across SQLite, Ethereum and mockBank; it is not a distributed ACID transaction.
+
+Reserve coverage does not authorize or reject redemption. Settlement burns `x` rUSD and pays `x` USD, including while the issuer state is `mint_blocked` or `wind_down`. The current experiment assumes sufficient mockBank funds; an overdraft is rejected by mockBank, while the corresponding insolvency process remains outside scope.
 
 Example request for 10 rUSD:
 

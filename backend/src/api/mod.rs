@@ -362,10 +362,8 @@ impl From<IssuanceError> for ApiError {
             | IssuanceError::FiatNotConfirmed
             | IssuanceError::BankMismatch
             | IssuanceError::SettlementInProgress
-            | IssuanceError::ProjectedCoverage(_) => Self::Conflict(error.to_string()),
-            IssuanceError::Bank(_) | IssuanceError::CoverageUnavailable(_) => {
-                Self::Unavailable(error.to_string())
-            }
+            | IssuanceError::IssuanceBlocked(_) => Self::Conflict(error.to_string()),
+            IssuanceError::Bank(_) => Self::Unavailable(error.to_string()),
             IssuanceError::Storage(_) | IssuanceError::Blockchain(_) => {
                 Self::Internal(error.to_string())
             }
@@ -380,7 +378,8 @@ impl From<RedemptionError> for ApiError {
             RedemptionError::IdempotencyConflict => Self::Conflict(e.to_string()),
             RedemptionError::Storage(_)
             | RedemptionError::Blockchain(_)
-            | RedemptionError::Bank(_) => Self::Internal(e.to_string()),
+            | RedemptionError::Bank(_)
+            | RedemptionError::Gate(_) => Self::Internal(e.to_string()),
         }
     }
 }
@@ -400,8 +399,8 @@ mod tests {
     use super::*;
     use crate::{
         application::{
-            BankTransactionReader, ConfirmedBankTransaction, IssuanceStore, MintResult, PayoutBank,
-            PollingMonitor, RedemptionToken, SnapshotCache, TokenIssuer,
+            BankTransactionReader, ConfirmedBankTransaction, IssuanceStore, MintResult,
+            OperationGate, PayoutBank, PollingMonitor, RedemptionToken, SnapshotCache, TokenIssuer,
         },
         config::esg,
         domain::{EsgObservation, IssuanceOrder},
@@ -438,12 +437,14 @@ mod tests {
         fn fail(&self, _: &str, _: &str) -> Result<(), IssuanceError> {
             Ok(())
         }
-        fn record_coverage_decision(
-            &self,
-            _: &crate::domain::IssuanceCoverageDecision,
-        ) -> Result<(), IssuanceError> {
-            Ok(())
-        }
+    }
+    fn operation_gate() -> Arc<OperationGate> {
+        Arc::new(OperationGate::new(Arc::new(
+            crate::infrastructure::operation_decision_sqlite::SqliteOperationDecisionStore::open(
+                ":memory:",
+            )
+            .unwrap(),
+        )))
     }
     struct TestBank;
     #[async_trait]
@@ -453,33 +454,6 @@ mod tests {
         }
     }
     struct TestToken;
-    struct TestEvidence;
-    #[async_trait]
-    impl crate::application::IssuanceEvidenceReader for TestEvidence {
-        async fn read(
-            &self,
-        ) -> Result<(crate::domain::TokenSnapshot, crate::domain::BankReserve), IssuanceError>
-        {
-            Ok((
-                crate::domain::TokenSnapshot {
-                    chain_id: 31337,
-                    block_number: 1,
-                    contract_address: "0x1".into(),
-                    name: "rUSD".into(),
-                    symbol: "rUSD".into(),
-                    decimals: 6,
-                    total_supply_raw: "0".into(),
-                },
-                crate::domain::BankReserve {
-                    account_id: "reserve-rusd".into(),
-                    currency: "USD".into(),
-                    balance_minor: "1250".into(),
-                    version: 1,
-                    as_of_unix_ms: 1,
-                },
-            ))
-        }
-    }
     #[async_trait]
     impl TokenIssuer for TestToken {
         async fn mint_for_operation(
@@ -509,19 +483,20 @@ mod tests {
         }
     }
     fn issuance_service() -> Arc<IssuanceService> {
-        let state = Arc::new(AssetStateService::new(
-            Arc::new(
-                crate::infrastructure::asset_state_sqlite::SqliteAssetStateStore::open(":memory:")
-                    .unwrap(),
-            ),
-            4,
-        ));
         Arc::new(IssuanceService::new(
             Arc::new(TestIssuanceStore(Mutex::new(None))),
             Arc::new(TestBank),
             Arc::new(TestToken),
-            Arc::new(TestEvidence),
-            state,
+            Arc::new(AssetStateService::new(
+                Arc::new(
+                    crate::infrastructure::asset_state_sqlite::SqliteAssetStateStore::open(
+                        ":memory:",
+                    )
+                    .unwrap(),
+                ),
+                4,
+            )),
+            operation_gate(),
         ))
     }
     fn redemption_service() -> Arc<RedemptionService> {
@@ -532,6 +507,16 @@ mod tests {
             ),
             Arc::new(TestToken),
             Arc::new(TestBank),
+            Arc::new(AssetStateService::new(
+                Arc::new(
+                    crate::infrastructure::asset_state_sqlite::SqliteAssetStateStore::open(
+                        ":memory:",
+                    )
+                    .unwrap(),
+                ),
+                4,
+            )),
+            operation_gate(),
         ))
     }
 

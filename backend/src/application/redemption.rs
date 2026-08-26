@@ -1,4 +1,7 @@
-use crate::domain::{RedemptionOrder, RedemptionStatus};
+use crate::{
+    application::{AssetStateService, OperationGate},
+    domain::{IssuerOperationKind, OperationDecisionOutcome, RedemptionOrder, RedemptionStatus},
+};
 use alloy::primitives::Address;
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -30,6 +33,8 @@ pub struct RedemptionService {
     store: Arc<dyn RedemptionStore>,
     token: Arc<dyn RedemptionToken>,
     bank: Arc<dyn PayoutBank>,
+    asset_state: Arc<AssetStateService>,
+    operation_gate: Arc<OperationGate>,
     lock: Arc<tokio::sync::Mutex<()>>,
 }
 impl RedemptionService {
@@ -37,11 +42,15 @@ impl RedemptionService {
         store: Arc<dyn RedemptionStore>,
         token: Arc<dyn RedemptionToken>,
         bank: Arc<dyn PayoutBank>,
+        asset_state: Arc<AssetStateService>,
+        operation_gate: Arc<OperationGate>,
     ) -> Self {
         Self {
             store,
             token,
             bank,
+            asset_state,
+            operation_gate,
             lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
@@ -92,6 +101,17 @@ impl RedemptionService {
         if order.status == RedemptionStatus::Completed {
             return Ok(order);
         }
+        let state = self
+            .asset_state
+            .current()
+            .map_err(|error| RedemptionError::Gate(error.to_string()))?;
+        let decision = self
+            .operation_gate
+            .decide(id, IssuerOperationKind::Redemption, &state)
+            .map_err(|error| RedemptionError::Gate(error.to_string()))?;
+        if decision.outcome == OperationDecisionOutcome::Rejected {
+            return Err(RedemptionError::Gate(decision.reason));
+        }
         if order.status != RedemptionStatus::Burned {
             let holder = order
                 .holder_address
@@ -136,10 +156,103 @@ pub enum RedemptionError {
     Blockchain(String),
     #[error("redemption payout failed: {0}")]
     Bank(String),
+    #[error("redemption operation gate failed: {0}")]
+    Gate(String),
 }
 fn unix_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        application::OperationGate,
+        domain::{CoverageStatus, ReserveCoverage},
+        infrastructure::{
+            asset_state_sqlite::SqliteAssetStateStore,
+            operation_decision_sqlite::SqliteOperationDecisionStore,
+            redemption_sqlite::SqliteRedemptionStore,
+        },
+    };
+    use std::sync::Mutex;
+
+    struct Token(Mutex<u8>);
+
+    #[async_trait]
+    impl RedemptionToken for Token {
+        async fn burn_for_operation(
+            &self,
+            _: &str,
+            _: Address,
+            _: u64,
+        ) -> Result<Option<String>, RedemptionError> {
+            *self.0.lock().unwrap() += 1;
+            Ok(Some("0xburn".into()))
+        }
+    }
+
+    struct Bank(Mutex<Vec<u64>>);
+
+    #[async_trait]
+    impl PayoutBank for Bank {
+        async fn pay_usd(&self, _: &str, amount_minor: u64) -> Result<(), RedemptionError> {
+            self.0.lock().unwrap().push(amount_minor);
+            Ok(())
+        }
+    }
+
+    fn asset_state(ratio_percent: f64) -> Arc<AssetStateService> {
+        let service = Arc::new(AssetStateService::new(
+            Arc::new(SqliteAssetStateStore::open(":memory:").unwrap()),
+            4,
+        ));
+        service
+            .evaluate_coverage(&ReserveCoverage {
+                observed_at_unix_ms: 1,
+                bank_as_of_unix_ms: 1,
+                reserve_account_id: "reserve-rusd".into(),
+                currency: "USD".into(),
+                reserve_balance_minor: "99".into(),
+                reserve_balance_usd: "0.99".into(),
+                token_supply_raw: "1000000".into(),
+                liability_usd: "1".into(),
+                surplus_usd: "-0.01".into(),
+                ratio_percent: Some(ratio_percent),
+                status: CoverageStatus::Undercollateralized,
+            })
+            .unwrap();
+        service
+    }
+
+    #[tokio::test]
+    async fn shortfall_does_not_block_redemption_and_payout_stays_at_par() {
+        let token = Arc::new(Token(Mutex::new(0)));
+        let bank = Arc::new(Bank(Mutex::new(Vec::new())));
+        let service = RedemptionService::new(
+            Arc::new(SqliteRedemptionStore::open(":memory:").unwrap()),
+            token.clone(),
+            bank.clone(),
+            asset_state(99.0),
+            Arc::new(OperationGate::new(Arc::new(
+                SqliteOperationDecisionStore::open(":memory:").unwrap(),
+            ))),
+        );
+        service
+            .create(
+                "redemption-1".into(),
+                "0x0000000000000000000000000000000000000001".into(),
+                "25000000".into(),
+            )
+            .unwrap();
+
+        let settled = service.settle("redemption-1").await.unwrap();
+
+        assert_eq!(settled.status, RedemptionStatus::Completed);
+        assert_eq!(*token.0.lock().unwrap(), 1);
+        assert_eq!(*bank.0.lock().unwrap(), vec![2500]);
+    }
 }

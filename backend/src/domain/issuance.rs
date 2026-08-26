@@ -23,30 +23,3 @@ pub enum IssuanceStatus {
     Completed,
     Failed,
 }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CoverageDecisionCode {
-    Accepted,
-    Rejected,
-    DataUnavailable,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct IssuanceCoverageDecision {
-    pub operation_id: String,
-    pub decision: CoverageDecisionCode,
-    pub reason: String,
-    pub current_reserve_minor: Option<String>,
-    pub pre_operation_reserve_minor: Option<String>,
-    pub confirmed_incoming_minor: String,
-    pub current_supply_raw: Option<String>,
-    pub proposed_mint_raw: String,
-    pub current_coverage_bps: Option<String>,
-    pub projected_coverage_bps: Option<String>,
-    pub evidence_block_number: Option<u64>,
-    pub bank_as_of_unix_ms: Option<u64>,
-    pub policy_version: String,
-    pub evaluated_at_unix_ms: u64,
-}
