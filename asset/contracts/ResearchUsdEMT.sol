@@ -13,20 +13,24 @@ contract ResearchUsdEMT is ERC20Pausable, AccessControl {
     bytes32 public constant BURNER_ROLE = keccak256("BURNER_ROLE");
     bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
     bytes32 public constant FREEZER_ROLE = keccak256("FREEZER_ROLE");
+    bytes32 public constant WIND_DOWN_ROLE = keccak256("WIND_DOWN_ROLE");
 
     mapping(address account => bool frozen) private _frozen;
     mapping(bytes32 operationId => bool processed) private _processedMintOperations;
     mapping(bytes32 operationId => bool processed) private _processedBurnOperations;
+    bool public windDown;
 
     error ZeroAddress();
     error AccountFrozen(address account);
     error MintOperationAlreadyProcessed(bytes32 operationId);
     error BurnOperationAlreadyProcessed(bytes32 operationId);
+    error WindDownBlocksOperation();
 
     event AddressFrozen(address indexed account);
     event AddressUnfrozen(address indexed account);
     event MintOperationExecuted(bytes32 indexed operationId, address indexed recipient, uint256 amount);
     event BurnOperationExecuted(bytes32 indexed operationId, address indexed holder, uint256 amount);
+    event WindDownEntered(address indexed operator);
 
     constructor(address admin) ERC20("Research USD EMT", "rUSD") {
         if (admin == address(0)) revert ZeroAddress();
@@ -36,6 +40,7 @@ contract ResearchUsdEMT is ERC20Pausable, AccessControl {
         _grantRole(BURNER_ROLE, admin);
         _grantRole(PAUSER_ROLE, admin);
         _grantRole(FREEZER_ROLE, admin);
+        _grantRole(WIND_DOWN_ROLE, admin);
     }
 
     function decimals() public pure override returns (uint8) {
@@ -74,6 +79,17 @@ contract ResearchUsdEMT is ERC20Pausable, AccessControl {
 
     function burn(address from, uint256 amount) external onlyRole(BURNER_ROLE) {
         _burn(from, amount);
+    }
+
+    /// @notice Irreversibly enters orderly wind-down for this demo deployment.
+    /// @dev Minting and ordinary transfers stop, while authorized burns required
+    /// to settle holder redemptions remain possible. This is deliberately distinct
+    /// from `pause`, which keeps its existing emergency-stop semantics and blocks
+    /// every balance update, including burns.
+    function enterWindDown() external onlyRole(WIND_DOWN_ROLE) {
+        if (windDown) return;
+        windDown = true;
+        emit WindDownEntered(msg.sender);
     }
 
     /// @notice MiCA-oriented compliance control used to stop all token balance movement.
@@ -115,6 +131,7 @@ contract ResearchUsdEMT is ERC20Pausable, AccessControl {
     function _update(address from, address to, uint256 value) internal override {
         if (from != address(0) && _frozen[from]) revert AccountFrozen(from);
         if (to != address(0) && _frozen[to]) revert AccountFrozen(to);
+        if (windDown && to != address(0)) revert WindDownBlocksOperation();
         super._update(from, to, value);
     }
 }

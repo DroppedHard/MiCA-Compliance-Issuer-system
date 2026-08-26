@@ -6,6 +6,8 @@ A local demonstration of the technical core of a USD-denominated electronic mone
 
 `ResearchUsdEMT` is a research token only. It does not represent real US dollars, hold reserves, create a redemption right, or claim MiCA compliance. Off-chain operations such as receiving funds or paying out US dollars are represented in the demo only by calls to `mint` and `burn` made by an authorized operator.
 
+The contract exposes a terminal `enterWindDown()` operation restricted by `WIND_DOWN_ROLE`. Wind-down is distinct from the emergency `pause`: it blocks mint and ordinary transfers but intentionally allows authorised burns required for redemption. There is no wind-down exit function. A fresh local deployment is required after changing this contract ABI.
+
 ## Implemented core
 
 - ERC-20 token named `Research USD EMT` with symbol `rUSD`;

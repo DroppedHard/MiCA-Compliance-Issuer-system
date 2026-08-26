@@ -66,4 +66,45 @@ describe("ResearchUsdEMT integration", async function () {
       [operationId],
     );
   });
+
+  it("makes wind-down terminal for mint and transfers while preserving burns", async function () {
+    const token = await viem.deployContract("ResearchUsdEMT", [admin.account.address]);
+    const amount = 10n * 10n ** 6n;
+    await token.write.mint([holder.account.address, amount]);
+
+    await viem.assertions.emitWithArgs(
+      token.write.enterWindDown(),
+      token,
+      "WindDownEntered",
+      [admin.account.address],
+    );
+    assert.equal(await token.read.windDown(), true);
+    await viem.assertions.revertWithCustomError(
+      token.write.mint([recipient.account.address, 1n]),
+      token,
+      "WindDownBlocksOperation",
+    );
+    await viem.assertions.revertWithCustomError(
+      token.write.transfer([recipient.account.address, 1n], { account: holder.account }),
+      token,
+      "WindDownBlocksOperation",
+    );
+    await token.write.burn([holder.account.address, amount]);
+    assert.equal(await token.read.balanceOf([holder.account.address]), 0n);
+
+    // Repeated commands are idempotent and there is intentionally no exit function.
+    await token.write.enterWindDown();
+    assert.equal(await token.read.windDown(), true);
+  });
+
+  it("keeps the existing global pause stricter than wind-down", async function () {
+    const token = await viem.deployContract("ResearchUsdEMT", [admin.account.address]);
+    await token.write.mint([holder.account.address, 1n]);
+    await token.write.pause();
+    await viem.assertions.revertWithCustomError(
+      token.write.burn([holder.account.address, 1n]),
+      token,
+      "EnforcedPause",
+    );
+  });
 });
