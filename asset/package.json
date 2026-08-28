@@ -9,6 +9,7 @@
     "test": "hardhat test",
     "traffic": "hardhat run scripts/traffic.ts --network localhost",
     "supply-cycle": "hardhat run scripts/supply-cycle.ts --network localhost",
+    "external-deposit": "hardhat run scripts/external-deposit.ts --network localhost",
     "typecheck": "tsc --noEmit"
   },
   "keywords": [],

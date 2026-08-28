@@ -120,3 +120,17 @@ The `scripts/emt-demo.ts` script performs the following operations locally:
 4. burn 5 rUSD from the merchant balance as a simplified redemption step.
 
 The Solidity tests verify contract rules and authorization. The TypeScript/viem tests verify the complete flow from the perspective of a blockchain client.
+
+## Demonstrate an external CASP deposit
+
+`CaspDepositRouter` accepts the hash of a CASP logical customer reference and transfers approved rUSD directly from the external sender to CASP hot custody. The external sender pays gas. Run the local example after Compose has deployed both contracts:
+
+```powershell
+$env:CASP_CLIENT_REFERENCE="rusd:casp:alice"
+$env:DEPOSIT_AMOUNT_RUSD="100"
+npm.cmd run external-deposit
+```
+
+The script uses Hardhat account 1 as the simulated external sender, approves the router and calls `depositFor`. CASP waits for its configured confirmation depth and credits the matching internal ledger account exactly once.
+
+> **Demo-only funding:** before making the deposit, this script mints test rUSD directly to the external sender. This deliberately bypasses the issuer purchase and reserve workflow, so it must not be treated as a compliant issuance path. Use it only to demonstrate observation and attribution of an incoming on-chain transfer. The direct mint can temporarily make issuer reserve coverage inconsistent.

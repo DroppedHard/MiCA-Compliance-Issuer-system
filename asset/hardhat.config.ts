@@ -31,7 +31,9 @@ export default defineConfig({
     localhost: {
       type: "http",
       chainType: "l1",
-      url: "http://127.0.0.1:8545",
+      // Host scripts keep the localhost default. The Compose deployer injects
+      // http://hardhat-node:8545 without changing direct on-chain tooling.
+      url: process.env.LOCALHOST_RPC_URL ?? "http://127.0.0.1:8545",
     },
     sepolia: {
       type: "http",
