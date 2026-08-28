@@ -1,5 +1,7 @@
 pub mod asset_state_sqlite;
 pub mod cache;
+pub mod casp_reporting_http;
+pub mod casp_reporting_sqlite;
 pub mod ethereum;
 pub mod issuance_sqlite;
 pub mod mock_bank_client;

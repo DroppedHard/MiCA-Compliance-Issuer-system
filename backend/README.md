@@ -32,6 +32,8 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:3100/api/v1/reserve-account
 
 Amounts use US cents and idempotency keys prevent repeated requests from being applied twice. Reusing a key with different operation data is rejected. mockBank rejects overdrafts. The backend compares cents and the token's six-decimal units using integer arithmetic; `ratioPercent` is only a presentation value. A detected shortfall is informational and does not pause the token.
 
+For controlled demonstrations, the issuer administration boundary exposes `POST /api/v1/admin/reserves/adjustments`. The JSON body contains a unique `operationId`, `direction` (`deposit` or `withdrawal`), decimal `amountUsd` and a `reason`. The issuer converts the amount to cents and delegates to the existing mockBank ledger, so idempotency and overdraft protection still apply. This endpoint models a test adjustment of issuer fiat assets; it is not a production bank integration.
+
 ## Issuer purchase and issuance endpoint
 
 The issuer exposes a durable, idempotent purchase workflow. Creating an order does not mint tokens. Settlement succeeds only after mockBank contains a matching USD deposit, and the contract records the issuance operation identifier so a retry cannot mint twice.
@@ -155,12 +157,27 @@ Both the issuer binary and mockBank load `.env` from this directory before parsi
 | `RUST_LOG` | no | `info` | tracing filter |
 | `DATABASE_PATH` | no | `data/backend-usd.sqlite` | issuer ESG and issuance-operation SQLite database |
 | `MOCK_BANK_URL` | no | `http://127.0.0.1:3100` | mockBank base URL |
+| `CASP_URL` | no | `http://127.0.0.1:3200` | CASP reporting API base URL |
 | `ISSUER_PRIVATE_KEY` | yes | none | local issuer signer holding `MINTER_ROLE`; use only a disposable development key |
 | `INITIALIZE_RESERVE_ON_STARTUP` | no | `true` | replace the mockBank balance with 110% of current supply during issuer startup |
 
 mockBank must be running before the issuer backend because reserve initialization is a startup prerequisite. `MOCK_BANK_INITIAL_BALANCE_MINOR` defaults to `0` and only affects creation of a previously absent account; existing balances are replaced by issuer initialization.
 
 For reserve-shortfall and recovery tests, set `INITIALIZE_RESERVE_ON_STARTUP=false` before starting the issuer. This disables only the automatic 110% reset. Reserve polling remains active and reports the actual mockBank value, while issuance still requires a matching confirmed fiat deposit. This makes under-collateralization testable without silently allowing unbacked minting.
+
+## CASP transaction reporting
+
+The issuer never reads the CASP SQLite database. An administrator explicitly imports a UTC date range through the CASP HTTP boundary:
+
+```powershell
+Invoke-RestMethod -Method Post "http://127.0.0.1:3000/api/v1/admin/casp-reports/ingest?from=2026-01-01&to=2026-03-31"
+Invoke-RestMethod "http://127.0.0.1:3000/api/v1/admin/casp-reports/daily?from=2026-01-01&to=2026-03-31"
+Invoke-RestMethod "http://127.0.0.1:3000/api/v1/admin/casp-reports/quarterly?year=2026&quarter=1"
+```
+
+Imported daily projections are persisted in the issuer database together with the imported range and source methodology. Quarterly averages use every calendar day in the quarter, including zero-activity days, but `thresholdEnforceable` can become true only after a full-quarter range was imported. Consistently with Article 23, the assessment requires both the average daily number to exceed 1 million and the average daily value to exceed EUR 200 million. The value calculation deliberately uses the documented demo conversion `1 USD = 1 EUR`. Known on-chain overlap is carried as evidence and is not added to the off-chain `goods_or_services` subset.
+
+An enforceable threshold breach permanently activates the persisted activity issuance gate in this demo. `OperationGate` evaluates that restriction alongside the independently persisted reserve state, so a later healthy reserve poll cannot silently clear the Article 23 block. Redemption remains available. There is intentionally no automatic unblock; reopening issuance would require a future explicit authority-controlled workflow with new evidence.
 
 ## Local setup tutorial
 

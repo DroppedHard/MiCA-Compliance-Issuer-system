@@ -9,15 +9,31 @@ pub const OPERATION_GATE_POLICY_VERSION: &str = "issuer-operation-gate-v1";
 pub trait OperationDecisionStore: Send + Sync {
     fn append(&self, decision: &OperationDecision) -> Result<(), OperationGateError>;
 }
+pub trait IssuanceRestriction: Send + Sync {
+    fn block_reason(&self) -> Result<Option<String>, OperationGateError>;
+}
 
 #[derive(Clone)]
 pub struct OperationGate {
     store: Arc<dyn OperationDecisionStore>,
+    issuance_restriction: Option<Arc<dyn IssuanceRestriction>>,
 }
 
 impl OperationGate {
     pub fn new(store: Arc<dyn OperationDecisionStore>) -> Self {
-        Self { store }
+        Self {
+            store,
+            issuance_restriction: None,
+        }
+    }
+    pub fn with_issuance_restriction(
+        store: Arc<dyn OperationDecisionStore>,
+        issuance_restriction: Arc<dyn IssuanceRestriction>,
+    ) -> Self {
+        Self {
+            store,
+            issuance_restriction: Some(issuance_restriction),
+        }
     }
 
     pub fn decide(
@@ -26,7 +42,19 @@ impl OperationGate {
         operation_kind: IssuerOperationKind,
         state: &AssetState,
     ) -> Result<OperationDecision, OperationGateError> {
-        let (outcome, reason) = evaluate_operation(operation_kind, state);
+        let (mut outcome, mut reason) = evaluate_operation(operation_kind, state);
+        if operation_kind == IssuerOperationKind::Issuance
+            && outcome == OperationDecisionOutcome::Allowed
+            && let Some(block_reason) = self
+                .issuance_restriction
+                .as_ref()
+                .map(|restriction| restriction.block_reason())
+                .transpose()?
+                .flatten()
+        {
+            outcome = OperationDecisionOutcome::Rejected;
+            reason = block_reason;
+        }
         let decision = OperationDecision {
             operation_id: operation_id.to_owned(),
             operation_kind,
@@ -52,6 +80,20 @@ pub fn evaluate_operation(
                 OperationDecisionOutcome::Allowed,
                 format!("issuance is allowed in {}", state_code(state.state)),
             ),
+            // Before the first issuance there is no token liability, so the
+            // coverage ratio is mathematically undefined. Issuance still pairs
+            // the confirmed USD deposit with the same amount of newly minted
+            // rUSD and therefore does not reduce reserve coverage.
+            AssetStateCode::DataUnavailable
+                if state.reserve_coverage_percent.is_none()
+                    && state.reason
+                        == "Reserve coverage cannot be calculated without token supply" =>
+            {
+                (
+                    OperationDecisionOutcome::Allowed,
+                    "initial issuance is allowed after the matching fiat deposit".to_owned(),
+                )
+            }
             AssetStateCode::MintBlocked
             | AssetStateCode::DataUnavailable
             | AssetStateCode::WindDown => (
@@ -99,6 +141,18 @@ pub enum OperationGateError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    struct Decisions;
+    impl OperationDecisionStore for Decisions {
+        fn append(&self, _: &OperationDecision) -> Result<(), OperationGateError> {
+            Ok(())
+        }
+    }
+    struct ActivityBlock;
+    impl IssuanceRestriction for ActivityBlock {
+        fn block_reason(&self) -> Result<Option<String>, OperationGateError> {
+            Ok(Some("Article 23 threshold evidence".into()))
+        }
+    }
 
     fn state(state: AssetStateCode) -> AssetState {
         AssetState {
@@ -112,23 +166,36 @@ mod tests {
     }
 
     #[test]
-    fn issuance_policy_allows_only_active_and_warning() {
+    fn issuance_policy_allows_covered_states_and_zero_supply_bootstrap() {
         for code in [AssetStateCode::Active, AssetStateCode::Warning] {
             assert_eq!(
                 evaluate_operation(IssuerOperationKind::Issuance, &state(code)).0,
                 OperationDecisionOutcome::Allowed
             );
         }
-        for code in [
-            AssetStateCode::MintBlocked,
-            AssetStateCode::DataUnavailable,
-            AssetStateCode::WindDown,
-        ] {
+        let zero_supply = AssetState {
+            state: AssetStateCode::DataUnavailable,
+            reason: "Reserve coverage cannot be calculated without token supply".into(),
+            reserve_coverage_percent: None,
+            evidence_at_unix_ms: None,
+            policy_version: "reserve-coverage-v1".into(),
+            updated_at_unix_ms: 1,
+        };
+        assert_eq!(
+            evaluate_operation(IssuerOperationKind::Issuance, &zero_supply).0,
+            OperationDecisionOutcome::Allowed
+        );
+        for code in [AssetStateCode::MintBlocked, AssetStateCode::WindDown] {
             assert_eq!(
                 evaluate_operation(IssuerOperationKind::Issuance, &state(code)).0,
                 OperationDecisionOutcome::Rejected
             );
         }
+        let unavailable = state(AssetStateCode::DataUnavailable);
+        assert_eq!(
+            evaluate_operation(IssuerOperationKind::Issuance, &unavailable).0,
+            OperationDecisionOutcome::Rejected
+        );
     }
 
     #[test]
@@ -145,5 +212,19 @@ mod tests {
                 OperationDecisionOutcome::Allowed
             );
         }
+    }
+    #[test]
+    fn persisted_activity_restriction_blocks_issuance_even_when_reserves_are_active() {
+        let gate =
+            OperationGate::with_issuance_restriction(Arc::new(Decisions), Arc::new(ActivityBlock));
+        let decision = gate
+            .decide(
+                "issuance",
+                IssuerOperationKind::Issuance,
+                &state(AssetStateCode::Active),
+            )
+            .unwrap();
+        assert_eq!(decision.outcome, OperationDecisionOutcome::Rejected);
+        assert_eq!(decision.reason, "Article 23 threshold evidence");
     }
 }

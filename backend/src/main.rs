@@ -3,15 +3,18 @@ use std::sync::Arc;
 use crypto_asset_backend::{
     api,
     application::{
-        AssetStateService, CachedTokenQueryService, ChainPollingService, EsgBroadcaster,
-        IssuanceService, ObservationBroadcaster, OperationGate, PollingMonitor, RedemptionService,
-        ReserveInitializer, ReserveMonitor, ReservePollingService, SnapshotCache, TokenReader,
-        WindDownService, initial_reserve_target_minor,
+        AssetStateService, CachedTokenQueryService, CaspReportingService, ChainPollingService,
+        EsgBroadcaster, IssuanceService, ObservationBroadcaster, OperationGate, PollingMonitor,
+        RedemptionService, ReserveAdjustmentService, ReserveInitializer, ReserveMonitor,
+        ReservePollingService, SnapshotCache, TokenReader, WindDownService,
+        initial_reserve_target_minor,
     },
     config::Config,
     infrastructure::{
         asset_state_sqlite::SqliteAssetStateStore,
         cache::InMemorySnapshotCache,
+        casp_reporting_http::HttpCaspReportSource,
+        casp_reporting_sqlite::SqliteCaspReportStore,
         ethereum::AlloyTokenReader,
         issuance_sqlite::SqliteIssuanceStore,
         mock_bank_client::{HttpBankTransactionReader, HttpReserveReader},
@@ -86,9 +89,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await?,
     );
-    let operation_gate = Arc::new(OperationGate::new(Arc::new(
-        SqliteOperationDecisionStore::open(&config.database_path)?,
-    )));
+    let casp_report_store = Arc::new(SqliteCaspReportStore::open(&config.database_path)?);
+    let operation_gate = Arc::new(OperationGate::with_issuance_restriction(
+        Arc::new(SqliteOperationDecisionStore::open(&config.database_path)?),
+        casp_report_store.clone(),
+    ));
     let issuance_service = Arc::new(IssuanceService::new(
         Arc::new(SqliteIssuanceStore::open(&config.database_path)?),
         bank_operations.clone(),
@@ -99,7 +104,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let redemption_service = Arc::new(RedemptionService::new(
         Arc::new(SqliteRedemptionStore::open(&config.database_path)?),
         token_operator.clone(),
-        bank_operations,
+        bank_operations.clone(),
         asset_state_service.clone(),
         operation_gate,
     ));
@@ -108,16 +113,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         token_operator,
         Arc::new(SqliteWindDownAuditStore::open(&config.database_path)?),
     ));
+    let reserve_adjustment_service = Arc::new(ReserveAdjustmentService::new(bank_operations));
+    let casp_reporting_service = Arc::new(CaspReportingService::new(
+        Arc::new(HttpCaspReportSource::new(&config.casp_url)),
+        casp_report_store,
+    ));
     let app = api::router(api::RouterDependencies {
         token_service,
         observations,
         esg_observations,
         esg_store,
         reserve_monitor,
+        reserve_adjustment_service,
         asset_state_service,
         issuance_service,
         redemption_service,
         wind_down_service,
+        casp_reporting_service,
     });
     let listener = TcpListener::bind(config.http_address).await?;
     info!(address = %config.http_address, "HTTP server started");

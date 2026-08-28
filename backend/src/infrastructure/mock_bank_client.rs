@@ -1,7 +1,8 @@
 use crate::{
     application::{
         BankTransactionReader, ConfirmedBankTransaction, IssuanceError, PayoutBank,
-        RedemptionError, ReserveError, ReserveInitializer, ReserveReader,
+        RedemptionError, ReserveAdjustmentDirection, ReserveAdjustmentError,
+        ReserveAdjustmentGateway, ReserveError, ReserveInitializer, ReserveReader,
     },
     domain::BankReserve,
 };
@@ -76,6 +77,41 @@ impl HttpBankTransactionReader {
             client: reqwest::Client::new(),
             base_url: base_url.trim_end_matches('/').to_owned(),
         }
+    }
+}
+#[async_trait]
+impl ReserveAdjustmentGateway for HttpBankTransactionReader {
+    async fn adjust(
+        &self,
+        operation_id: &str,
+        direction: ReserveAdjustmentDirection,
+        amount_minor: u64,
+        reason: &str,
+    ) -> Result<BankReserve, ReserveAdjustmentError> {
+        let operation = match direction {
+            ReserveAdjustmentDirection::Deposit => "deposits",
+            ReserveAdjustmentDirection::Withdrawal => "withdrawals",
+        };
+        let response = self
+            .client
+            .post(format!(
+                "{}/api/v1/reserve-accounts/reserve-rusd/{operation}",
+                self.base_url
+            ))
+            .json(&serde_json::json!({
+                "amountMinor": amount_minor.to_string(),
+                "reference": reason,
+                "idempotencyKey": format!("issuer-admin-reserve-{operation_id}")
+            }))
+            .send()
+            .await
+            .map_err(|error| ReserveAdjustmentError::Bank(error.to_string()))?;
+        response
+            .error_for_status()
+            .map_err(|error| ReserveAdjustmentError::Bank(error.to_string()))?
+            .json::<BankReserve>()
+            .await
+            .map_err(|error| ReserveAdjustmentError::Bank(error.to_string()))
     }
 }
 #[async_trait]

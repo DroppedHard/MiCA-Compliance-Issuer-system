@@ -1,14 +1,19 @@
 use crate::{
     application::{
-        AssetStateService, CachedTokenQueryService, CreateIssuance, EsgBroadcaster, EsgStore,
-        IssuanceError, IssuanceService, ObservationBroadcaster, QueryError, RedemptionError,
-        RedemptionService, ReserveMonitor, WindDownError, WindDownService,
+        AdjustReserve, AssetStateService, CachedTokenQueryService, CaspReportingError,
+        CaspReportingService, CreateIssuance, EsgBroadcaster, EsgStore, IssuanceError,
+        IssuanceService, ObservationBroadcaster, QueryError, RedemptionError, RedemptionService,
+        ReserveAdjustmentDirection, ReserveAdjustmentError, ReserveAdjustmentService,
+        ReserveMonitor, WindDownError, WindDownService,
     },
-    domain::{AssetState, EsgHistory, EsgObservation, ReserveCoverage, TokenObservation},
+    domain::{
+        AssetState, CaspDailyAggregate, CaspDailyReport, EsgHistory, EsgObservation,
+        QuarterlyTransactionAssessment, ReserveCoverage, TokenObservation,
+    },
 };
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::{
         IntoResponse, Response, Sse,
@@ -28,10 +33,12 @@ struct AppState {
     esg_observations: EsgBroadcaster,
     esg_store: Arc<dyn EsgStore>,
     reserve_monitor: ReserveMonitor,
+    reserve_adjustment_service: Arc<ReserveAdjustmentService>,
     asset_state_service: Arc<AssetStateService>,
     issuance_service: Arc<IssuanceService>,
     redemption_service: Arc<RedemptionService>,
     wind_down_service: Arc<WindDownService>,
+    casp_reporting_service: Arc<CaspReportingService>,
 }
 
 pub struct RouterDependencies {
@@ -40,10 +47,12 @@ pub struct RouterDependencies {
     pub esg_observations: EsgBroadcaster,
     pub esg_store: Arc<dyn EsgStore>,
     pub reserve_monitor: ReserveMonitor,
+    pub reserve_adjustment_service: Arc<ReserveAdjustmentService>,
     pub asset_state_service: Arc<AssetStateService>,
     pub issuance_service: Arc<IssuanceService>,
     pub redemption_service: Arc<RedemptionService>,
     pub wind_down_service: Arc<WindDownService>,
+    pub casp_reporting_service: Arc<CaspReportingService>,
 }
 
 pub fn router(dependencies: RouterDependencies) -> Router {
@@ -56,9 +65,19 @@ pub fn router(dependencies: RouterDependencies) -> Router {
         .route("/api/v1/esg/daily", get(esg_daily))
         .route("/api/v1/reserves", get(reserve_coverage))
         .route("/api/v1/reserves/stream", get(reserve_stream))
+        .route("/api/v1/admin/reserves/adjustments", post(adjust_reserve))
         .route("/api/v1/asset-state", get(asset_state))
         .route("/api/v1/asset-state/stream", get(asset_state_stream))
         .route("/api/v1/admin/asset-state/wind-down", post(enter_wind_down))
+        .route(
+            "/api/v1/admin/casp-reports/ingest",
+            post(ingest_casp_reports),
+        )
+        .route("/api/v1/admin/casp-reports/daily", get(casp_daily_reports))
+        .route(
+            "/api/v1/admin/casp-reports/quarterly",
+            get(casp_quarterly_report),
+        )
         .route("/api/v1/issuance-orders", post(create_issuance))
         .route("/api/v1/issuance-orders/{operation_id}", get(get_issuance))
         .route(
@@ -80,11 +99,91 @@ pub fn router(dependencies: RouterDependencies) -> Router {
             esg_observations: dependencies.esg_observations,
             esg_store: dependencies.esg_store,
             reserve_monitor: dependencies.reserve_monitor,
+            reserve_adjustment_service: dependencies.reserve_adjustment_service,
             asset_state_service: dependencies.asset_state_service,
             issuance_service: dependencies.issuance_service,
             redemption_service: dependencies.redemption_service,
             wind_down_service: dependencies.wind_down_service,
+            casp_reporting_service: dependencies.casp_reporting_service,
         })
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReserveAdjustmentRequest {
+    operation_id: String,
+    direction: ReserveAdjustmentRequestDirection,
+    amount_usd: String,
+    reason: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ReserveAdjustmentRequestDirection {
+    Deposit,
+    Withdrawal,
+}
+
+async fn adjust_reserve(
+    State(state): State<AppState>,
+    Json(request): Json<ReserveAdjustmentRequest>,
+) -> Result<Json<crate::domain::BankReserve>, ApiError> {
+    let direction = match request.direction {
+        ReserveAdjustmentRequestDirection::Deposit => ReserveAdjustmentDirection::Deposit,
+        ReserveAdjustmentRequestDirection::Withdrawal => ReserveAdjustmentDirection::Withdrawal,
+    };
+    state
+        .reserve_adjustment_service
+        .execute(AdjustReserve {
+            operation_id: request.operation_id,
+            direction,
+            amount_usd: request.amount_usd,
+            reason: request.reason,
+        })
+        .await
+        .map(Json)
+        .map_err(ApiError::from)
+}
+#[derive(Deserialize)]
+struct CaspRangeQuery {
+    from: String,
+    to: String,
+}
+#[derive(Deserialize)]
+struct QuarterQuery {
+    year: i32,
+    quarter: u8,
+}
+async fn ingest_casp_reports(
+    State(state): State<AppState>,
+    Query(query): Query<CaspRangeQuery>,
+) -> Result<Json<CaspDailyReport>, ApiError> {
+    state
+        .casp_reporting_service
+        .ingest(&query.from, &query.to)
+        .await
+        .map(Json)
+        .map_err(ApiError::from)
+}
+async fn casp_daily_reports(
+    State(state): State<AppState>,
+    Query(query): Query<CaspRangeQuery>,
+) -> Result<Json<Vec<CaspDailyAggregate>>, ApiError> {
+    state
+        .casp_reporting_service
+        .daily(&query.from, &query.to)
+        .map(Json)
+        .map_err(ApiError::from)
+}
+async fn casp_quarterly_report(
+    State(state): State<AppState>,
+    Query(query): Query<QuarterQuery>,
+) -> Result<Json<QuarterlyTransactionAssessment>, ApiError> {
+    state
+        .casp_reporting_service
+        .quarterly(query.year, query.quarter)
+        .map(Json)
+        .map_err(ApiError::from)
 }
 
 async fn asset_state(State(state): State<AppState>) -> Result<Json<AssetState>, ApiError> {
@@ -397,12 +496,34 @@ impl From<WindDownError> for ApiError {
     }
 }
 
+impl From<ReserveAdjustmentError> for ApiError {
+    fn from(error: ReserveAdjustmentError) -> Self {
+        match error {
+            ReserveAdjustmentError::Invalid(_) => Self::BadRequest(error.to_string()),
+            ReserveAdjustmentError::Bank(_) => Self::Unavailable(error.to_string()),
+        }
+    }
+}
+
 impl From<QueryError> for ApiError {
     fn from(error: QueryError) -> Self {
         match error {
             QueryError::PollingUnavailable(message) => Self::Unavailable(message),
             QueryError::CacheEmpty => Self::Unavailable(error.to_string()),
             QueryError::Cache(message) => Self::Internal(message),
+        }
+    }
+}
+impl From<CaspReportingError> for ApiError {
+    fn from(error: CaspReportingError) -> Self {
+        match error {
+            CaspReportingError::InvalidRange | CaspReportingError::SourceContract(_) => {
+                Self::BadRequest(error.to_string())
+            }
+            CaspReportingError::Source(_) => Self::Unavailable(error.to_string()),
+            CaspReportingError::Storage(_) | CaspReportingError::Overflow => {
+                Self::Internal(error.to_string())
+            }
         }
     }
 }
@@ -413,8 +534,8 @@ mod tests {
     use crate::{
         application::{
             BankTransactionReader, ConfirmedBankTransaction, IssuanceStore, MintResult,
-            OperationGate, PayoutBank, PollingMonitor, RedemptionToken, SnapshotCache, TokenIssuer,
-            TokenLifecycle,
+            OperationGate, PayoutBank, PollingMonitor, RedemptionToken, ReserveAdjustmentGateway,
+            SnapshotCache, TokenIssuer, TokenLifecycle,
         },
         config::esg,
         domain::{EsgObservation, IssuanceOrder},
@@ -430,6 +551,25 @@ mod tests {
     use tower::ServiceExt;
 
     struct TestIssuanceStore(Mutex<Option<IssuanceOrder>>);
+    struct TestReserveAdjustment;
+    #[async_trait]
+    impl ReserveAdjustmentGateway for TestReserveAdjustment {
+        async fn adjust(
+            &self,
+            _: &str,
+            _: ReserveAdjustmentDirection,
+            _: u64,
+            _: &str,
+        ) -> Result<crate::domain::BankReserve, ReserveAdjustmentError> {
+            Ok(crate::domain::BankReserve {
+                account_id: "reserve-rusd".into(),
+                currency: "USD".into(),
+                balance_minor: "100".into(),
+                version: 1,
+                as_of_unix_ms: 1,
+            })
+        }
+    }
     impl IssuanceStore for TestIssuanceStore {
         fn create(&self, order: &IssuanceOrder) -> Result<IssuanceOrder, IssuanceError> {
             let mut value = self.0.lock().unwrap();
@@ -461,6 +601,21 @@ mod tests {
         )))
     }
     struct TestBank;
+    struct TestCaspSource;
+    #[async_trait]
+    impl crate::application::CaspReportSource for TestCaspSource {
+        async fn fetch(
+            &self,
+            from: &str,
+            to: &str,
+        ) -> Result<crate::domain::CaspDailyReport, CaspReportingError> {
+            Ok(crate::domain::CaspDailyReport {
+                from_date_utc: from.into(),
+                to_date_utc: to.into(),
+                days: Vec::new(),
+            })
+        }
+    }
     #[async_trait]
     impl BankTransactionReader for TestBank {
         async fn find(&self, _: &str) -> Result<Option<ConfirmedBankTransaction>, IssuanceError> {
@@ -577,6 +732,9 @@ mod tests {
             esg_observations: esg,
             esg_store: store,
             reserve_monitor: ReserveMonitor::new(4),
+            reserve_adjustment_service: Arc::new(ReserveAdjustmentService::new(Arc::new(
+                TestReserveAdjustment,
+            ))),
             asset_state_service: Arc::new(AssetStateService::new(
                 Arc::new(
                     crate::infrastructure::asset_state_sqlite::SqliteAssetStateStore::open(
@@ -589,6 +747,15 @@ mod tests {
             issuance_service: issuance_service(),
             redemption_service: redemption_service(),
             wind_down_service: wind_down_service(),
+            casp_reporting_service: Arc::new(CaspReportingService::new(
+                Arc::new(TestCaspSource),
+                Arc::new(
+                    crate::infrastructure::casp_reporting_sqlite::SqliteCaspReportStore::open(
+                        ":memory:",
+                    )
+                    .unwrap(),
+                ),
+            )),
         })
     }
 

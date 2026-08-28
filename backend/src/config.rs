@@ -21,6 +21,7 @@ pub struct Config {
     pub polling_max_staleness: Duration,
     pub database_path: String,
     pub mock_bank_url: String,
+    pub casp_url: String,
     pub issuer_private_key: String,
     pub initialize_reserve_on_startup: bool,
 }
@@ -73,6 +74,7 @@ impl Config {
                 .unwrap_or_else(|_| "data/backend-usd.sqlite".to_owned()),
             mock_bank_url: env::var("MOCK_BANK_URL")
                 .unwrap_or_else(|_| "http://127.0.0.1:3100".to_owned()),
+            casp_url: env::var("CASP_URL").unwrap_or_else(|_| "http://127.0.0.1:3200".to_owned()),
             issuer_private_key: env::var("ISSUER_PRIVATE_KEY")
                 .map_err(|_| ConfigError::MissingIssuerPrivateKey)?,
             initialize_reserve_on_startup: boolean("INITIALIZE_RESERVE_ON_STARTUP", true)?,
