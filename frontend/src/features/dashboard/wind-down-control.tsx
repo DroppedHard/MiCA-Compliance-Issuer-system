@@ -6,7 +6,7 @@ import { Dialog } from "@/components/ui/dialog"
 import type { AssetState } from "@/domain/asset-state"
 import { enterWindDownPromise } from "@/infrastructure/api/asset-state-api"
 
-export function WindDownControl({ state }: { state: AssetState["state"] }) {
+export function WindDownControl({ state }: { state?: AssetState["state"] }) {
   const [open, setOpen] = useState(false)
   const [reason, setReason] = useState("")
   const queryClient = useQueryClient()

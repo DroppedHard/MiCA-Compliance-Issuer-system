@@ -8,9 +8,16 @@ import { toReserveValue, type ReserveCoverage, type SupplyReservePoint } from "@
 type SupplyChartProps = {
   latestToken: TokenObservation
   latestReserve?: ReserveCoverage
+  preset: SupplyChartPreset
 }
 
-export function SupplyChart({ latestToken, latestReserve }: SupplyChartProps) {
+export type SupplyChartPreset = {
+  id: "live" | "medium" | "overview"
+  sampleIntervalMs: number
+  rangeMs: number
+}
+
+export function SupplyChart({ latestToken, latestReserve, preset }: SupplyChartProps) {
   const { data = [] } = useQuery<TokenObservation[]>({
     queryKey: tokenHistoryQueryKey,
     queryFn: async () => [],
@@ -21,10 +28,13 @@ export function SupplyChart({ latestToken, latestReserve }: SupplyChartProps) {
     queryFn: async () => [],
     staleTime: Infinity,
   })
-  const points = buildSupplyReservePoints(data, reserveHistory, latestToken, latestReserve)
+  const points = selectChartWindow(
+    buildSupplyReservePoints(data, reserveHistory, latestToken, latestReserve),
+    preset,
+  )
 
   return (
-    <div className="h-64 w-full" aria-label="Podaż tokenu i rezerwa bankowa w ostatnich obserwacjach">
+    <div className="h-48 w-full" aria-label="Podaż tokenu i rezerwa bankowa w ostatnich obserwacjach">
       {points.length < 2 ? (
         <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-slate-700 text-sm text-slate-500">
           Oczekiwanie na kolejną obserwację…
@@ -54,6 +64,20 @@ export function SupplyChart({ latestToken, latestReserve }: SupplyChartProps) {
       )}
     </div>
   )
+}
+
+export function selectChartWindow(points: SupplyReservePoint[], preset: SupplyChartPreset): SupplyReservePoint[] {
+  if (points.length === 0) return []
+  const newestTimestamp = points.at(-1)!.observedAtUnixMs
+  const fromTimestamp = newestTimestamp - preset.rangeMs
+  const visible = points.filter((point) => point.observedAtUnixMs >= fromTimestamp)
+
+  const sampled = new Map<number, SupplyReservePoint>()
+  for (const point of visible) {
+    const bucket = Math.floor(point.observedAtUnixMs / preset.sampleIntervalMs)
+    sampled.set(bucket, point)
+  }
+  return [...sampled.values()]
 }
 
 export function buildSupplyReservePoints(

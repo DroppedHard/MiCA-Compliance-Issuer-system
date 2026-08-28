@@ -10,7 +10,7 @@ export const toEsgChartPoints = (days: readonly EsgEstimate[]) => days.map((day)
 
 export function EsgEnergyChart({ days }: { days: readonly EsgEstimate[] }) {
   const data = toEsgChartPoints(days)
-  return <div className="h-72 w-full" aria-label="Estymowane zużycie energii w ostatnich siedmiu dniach">
+  return <div className="h-52 w-full" aria-label="Estymowane zużycie energii w ostatnich siedmiu dniach">
     <ResponsiveContainer width="100%" height="100%">
       <ComposedChart data={data} margin={{ top: 10, right: 14, bottom: 0, left: 4 }} accessibilityLayer>
         <CartesianGrid stroke="#1e293b" vertical={false} />

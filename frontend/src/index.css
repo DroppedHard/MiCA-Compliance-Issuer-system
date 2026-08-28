@@ -11,3 +11,39 @@
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 320px; min-height: 100vh; background: radial-gradient(circle at 12% 8%, rgba(13, 148, 136, 0.14), transparent 32rem), radial-gradient(circle at 92% 18%, rgba(37, 99, 235, 0.11), transparent 28rem), #07111f; }
 button, input { font: inherit; }
+
+/* Fixed desktop workspace: the thesis demo intentionally targets a wide screen. */
+.issuer-dashboard { width: 100%; min-width: 1780px; height: 100vh; overflow: hidden; padding: 8px; }
+.issuer-dashboard > header { height: 50px; margin-bottom: 6px; }
+.issuer-dashboard > header p:first-child { display: none; }
+.issuer-dashboard > header h1 { font-size: 22px; }
+.issuer-dashboard > header p { margin-top: 2px; font-size: 12px; }
+.issuer-dashboard .dashboard-overview { display: flex; height: 52px; gap: 6px; }
+.issuer-dashboard .parity-summary,
+.issuer-dashboard .overview-metric { display: flex; min-width: 0; flex: 1 1 0; flex-direction: column; justify-content: center; border: 1px solid rgba(255,255,255,.1); border-radius: 9px; background: rgba(2,6,23,.6); padding: 6px 9px; }
+.issuer-dashboard .parity-summary { flex-grow: 1.15; border-color: rgba(20,184,166,.25); background: rgba(20,184,166,.06); }
+.issuer-dashboard .parity-summary span,
+.issuer-dashboard .overview-metric span { color: #64748b; font-size: 11px; }
+.issuer-dashboard .parity-summary strong,
+.issuer-dashboard .overview-metric strong { margin-top: 3px; overflow: hidden; color: #f8fafc; font-size: 15px; line-height: 18px; text-overflow: ellipsis; white-space: nowrap; }
+.issuer-dashboard .overview-metric svg { position: absolute; align-self: flex-end; }
+.issuer-dashboard .overview-metric { position: relative; }
+.issuer-dashboard .dashboard-workspace { display: flex; height: calc(100vh - 124px); min-height: 650px; align-items: stretch; gap: 6px; margin-top: 6px; }
+.issuer-dashboard .admin-actions { display: flex; width: 340px; flex: 0 0 340px; flex-direction: column; gap: 6px; }
+.issuer-dashboard .admin-actions > :first-child { flex: 1 1 auto; }
+.issuer-dashboard .admin-actions > :last-child { flex: 0 0 auto; }
+.issuer-dashboard .chart-panel { width: 650px; flex: 0 0 650px; }
+.issuer-dashboard .system-panel { width: 290px; flex: 0 0 290px; }
+.issuer-dashboard .esg-panel { min-width: 0; flex: 1 1 auto; }
+.issuer-dashboard .chart-presets { display: flex; flex: 0 0 auto; gap: 5px; }
+.issuer-dashboard .chart-presets button { display: flex; min-width: 78px; flex-direction: column; border: 1px solid #334155; border-radius: 8px; background: rgba(15,23,42,.8); padding: 5px 8px; color: #94a3b8; text-align: left; }
+.issuer-dashboard .chart-presets button strong { font-size: 10px; font-weight: 600; }
+.issuer-dashboard .chart-presets button span { margin-top: 1px; color: #64748b; font-size: 9px; }
+.issuer-dashboard .chart-presets button.active { border-color: rgba(45,212,191,.55); background: rgba(45,212,191,.12); color: #5eead4; }
+.issuer-dashboard .reserve-summary > :last-child { border-bottom: 0; }
+.issuer-dashboard .reserve-state { margin-top: 8px; border-radius: 8px; padding: 7px 9px; font-size: 11px; }
+.issuer-dashboard .reserve-state.covered { background: rgba(16,185,129,.1); color: #6ee7b7; }
+.issuer-dashboard .reserve-state.uncovered { background: rgba(244,63,94,.1); color: #fda4af; }
+.issuer-dashboard .esg-metrics { display: flex; gap: 5px; }
+.issuer-dashboard .esg-metrics > * { min-width: 0; flex: 1 1 0; }
+.issuer-dashboard .esg-history { margin-top: 12px; border-top: 1px solid #1e293b; padding-top: 10px; }

@@ -1,6 +1,6 @@
 import { useState } from "react"
 import { useQuery } from "@tanstack/react-query"
-import { Activity, Blocks, Building2, CircleDollarSign, Database, ExternalLink, Info, Leaf, Radio, ShieldCheck, TriangleAlert, Zap } from "lucide-react"
+import { Activity, Blocks, CircleDollarSign, CircleHelp, Database, Leaf, Radio, ShieldCheck, TriangleAlert, Zap } from "lucide-react"
 import { reserveQueryOptions } from "@/application/queries/reserve-query"
 import { assetStateQueryOptions } from "@/application/queries/asset-state-query"
 import { useAssetStateStream } from "@/application/realtime/use-asset-state-stream"
@@ -15,9 +15,16 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Dialog } from "@/components/ui/dialog"
 import { formatTokenAmount, shortenAddress } from "@/domain/token"
 import { assetStateLabel } from "@/domain/asset-state"
-import { SupplyChart } from "./supply-chart"
+import { SupplyChart, type SupplyChartPreset } from "./supply-chart"
 import { EsgEnergyChart } from "./esg-energy-chart"
 import { WindDownControl } from "./wind-down-control"
+import { ReserveAdjustmentControl } from "./reserve-adjustment-control"
+
+const chartPresets: Array<SupplyChartPreset & { pollLabel: string; rangeLabel: string }> = [
+  { id: "live", sampleIntervalMs: 10_000, rangeMs: 60 * 60_000, pollLabel: "co 10 s", rangeLabel: "zakres 1 h" },
+  { id: "medium", sampleIntervalMs: 60_000, rangeMs: 4 * 60 * 60_000, pollLabel: "co 1 min", rangeLabel: "zakres 4 h" },
+  { id: "overview", sampleIntervalMs: 60 * 60_000, rangeMs: 12 * 60 * 60_000, pollLabel: "co 1 godz.", rangeLabel: "zakres 12 h" },
+]
 
 export function AdminDashboard() {
   const token = useQuery(tokenQueryOptions)
@@ -26,6 +33,7 @@ export function AdminDashboard() {
   const reserve = useQuery(reserveQueryOptions)
   const assetState = useQuery(assetStateQueryOptions)
   const [detailsOpen, setDetailsOpen] = useState(false)
+  const [chartPreset, setChartPreset] = useState<SupplyChartPreset>(chartPresets[0])
   const connection = useTokenStream()
   useEsgStream()
   useReserveStream()
@@ -51,34 +59,62 @@ export function AdminDashboard() {
   const supply = formatTokenAmount(snapshot.totalSupplyRaw, snapshot.decimals)
 
   return (
-    <main className="mx-auto min-h-screen max-w-7xl p-5 md:p-8">
-      <header className="mb-8 flex flex-col gap-5 md:flex-row md:items-end md:justify-between">
+    <main className="issuer-dashboard">
+      <header className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
         <div>
           <p className="mb-2 font-mono text-xs uppercase tracking-[0.28em] text-teal-400">Środowisko badawcze</p>
-          <h1 className="text-3xl font-semibold tracking-tight text-white md:text-4xl">Panel zarządzania EMT</h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-white md:text-3xl">Panel zarządzania EMT</h1>
           <p className="mt-2 max-w-2xl text-slate-400">Bieżący podgląd lokalnie wdrożonego kryptoaktywa oraz demonstracyjne sterowanie jego cyklem życia.</p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
-          <a href="/client" className="inline-flex items-center gap-2 rounded-lg border border-slate-700 px-3 py-2 text-xs font-medium text-slate-300 transition hover:border-teal-400/40 hover:bg-teal-400/10 hover:text-teal-200">Widok klienta <ExternalLink className="size-3.5" /></a>
           <Badge className={connection === "live" ? "border-teal-400/30 bg-teal-400/10 text-teal-300" : "border-amber-400/30 bg-amber-400/10 text-amber-300"}>
             <Radio className="mr-1.5 size-3" /> SSE {connectionLabel(connection)}
           </Badge>
         </div>
       </header>
 
-      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <section className="dashboard-overview">
+        <div className="parity-summary" title="Stałe odniesienie emisji i wykupu"><span>Parytet emitenta</span><strong>1 rUSD = 1 USD</strong></div>
         <Metric icon={CircleDollarSign} label="Całkowita podaż" value={`${supply} ${snapshot.symbol}`} detail={`${snapshot.decimals} miejsc dziesiętnych`} />
         <Metric icon={Blocks} label="Najnowszy blok" value={snapshot.blockNumber.toLocaleString("pl-PL")} detail={`Identyfikator sieci ${snapshot.chainId}`} />
         <Metric icon={Database} label="Kontrakt" value={shortenAddress(snapshot.contractAddress)} detail={snapshot.name} mono />
         <Metric icon={Activity} label="Czas obserwacji" value={new Date(observedAtUnixMs).toLocaleTimeString("pl-PL")} detail={new Date(observedAtUnixMs).toLocaleDateString("pl-PL")} />
       </section>
 
-      <section className="mt-4 grid gap-4 lg:grid-cols-[2fr_1fr]">
-        <Card>
-          <CardHeader><CardTitle>Podaż i rezerwa</CardTitle><CardDescription>Ostatnie obserwacje podaży tokenu i salda mockBanku odebrane przez SSE.</CardDescription></CardHeader>
-          <CardContent><SupplyChart latestToken={token.data} latestReserve={reserve.data} /></CardContent>
+      <section className="dashboard-workspace">
+        <aside className="admin-actions">
+          <Card className={reserve.data?.status === "undercollateralized" ? "border-rose-500/40" : undefined}>
+            <CardHeader><CardTitle>Rezerwy</CardTitle><CardDescription>Pokrycie podaży i testowa korekta mockBanku.</CardDescription></CardHeader>
+            <CardContent>
+              {reserve.isPending && <Skeleton className="h-24" />}
+              {reserve.isError && <div className="flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-200"><TriangleAlert className="size-4" /> Brak danych z mockBanku.</div>}
+              {reserve.data && <div className="reserve-summary">
+                <StatusRow label="Rezerwa" value={`${reserve.data.reserveBalanceUsd} USD`} />
+                <StatusRow label="Zobowiązanie" value={`${reserve.data.liabilityUsd} USD`} />
+                <StatusRow label="Pokrycie" value={reserve.data.ratioPercent === null ? "Brak podaży" : `${reserve.data.ratioPercent.toLocaleString("pl-PL", { maximumFractionDigits: 2 })}%`} />
+                <StatusRow label={Number(reserve.data.surplusUsd) >= 0 ? "Nadwyżka" : "Niedobór"} value={`${reserve.data.surplusUsd} USD`} />
+              </div>}
+              {reserve.data && <p className={`reserve-state ${reserve.data.status === "covered" ? "covered" : "uncovered"}`}>{reserve.data.status === "covered" ? "Rezerwa pokrywa podaż rUSD." : "Nowa emisja jest zablokowana; wykup pozostaje dostępny."}</p>}
+              <ReserveAdjustmentControl />
+            </CardContent>
+          </Card>
+          <Card className="border-rose-500/20">
+            <CardHeader><CardTitle>Wygaszanie tokenu</CardTitle><CardDescription>Nieodwracalna blokada emisji i zwykłych transferów.</CardDescription></CardHeader>
+            <CardContent><WindDownControl state={assetState.data?.state} /></CardContent>
+          </Card>
+        </aside>
+
+        <Card className="chart-panel">
+          <CardHeader className="flex-row items-start justify-between gap-4">
+            <div><CardTitle>Podaż i rezerwa</CardTitle><CardDescription>Dane z cache backendu otrzymywane przez SSE.</CardDescription></div>
+            <div className="chart-presets" aria-label="Ustawienia zakresu wykresu">
+              {chartPresets.map((preset) => <button key={preset.id} className={chartPreset.id === preset.id ? "active" : ""} onClick={() => setChartPreset(preset)}><strong>{preset.pollLabel}</strong><span>{preset.rangeLabel}</span></button>)}
+            </div>
+          </CardHeader>
+          <CardContent><SupplyChart latestToken={token.data} latestReserve={reserve.data} preset={chartPreset} /></CardContent>
         </Card>
-        <Card>
+
+        <Card className="system-panel">
           <CardHeader><CardTitle>Stan systemu</CardTitle><CardDescription>Bieżący stan połączeń między warstwami.</CardDescription></CardHeader>
           <CardContent className="space-y-4">
             <StatusRow label="Ostatni odczyt backendu" value={new Date(observedAtUnixMs).toLocaleTimeString("pl-PL")} />
@@ -91,72 +127,62 @@ export function AdminDashboard() {
               <div className="flex items-center justify-between gap-3"><strong className="text-sm">{assetStateLabel(assetState.data.state)}</strong><span className="font-mono text-[10px]">{assetState.data.policyVersion}</span></div>
               <p className="mt-2">{assetState.data.reason}</p>
               <p className="mt-2 opacity-70">Ostatnia decyzja: {new Date(assetState.data.updatedAtUnixMs).toLocaleString("pl-PL")}</p>
-              <WindDownControl state={assetState.data.state} />
             </div>}
           </CardContent>
         </Card>
-      </section>
-      <section className="mt-4">
-        <Card className={reserve.data?.status === "undercollateralized" ? "border-rose-500/40" : undefined}>
-          <CardHeader><CardTitle>Pokrycie rezerwy rUSD</CardTitle><CardDescription>Dane z zewnętrznego mockBanku porównane z aktualną podażą tokenu.</CardDescription></CardHeader>
-          <CardContent>
-            {reserve.isPending && <Skeleton className="h-28" />}
-            {reserve.isError && <div className="flex items-center gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-200"><TriangleAlert className="size-5" /> Brak świeżych danych z mockBanku. Uruchom serwis na porcie 3100.</div>}
-            {reserve.data && <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-              <EsgMetric icon={Building2} label="Rezerwa bankowa" value={`${reserve.data.reserveBalanceUsd} USD`} />
-              <EsgMetric icon={CircleDollarSign} label="Zobowiązanie tokenu" value={`${reserve.data.liabilityUsd} USD`} />
-              <EsgMetric icon={ShieldCheck} label="Wskaźnik pokrycia" value={reserve.data.ratioPercent === null ? "Brak podaży" : `${reserve.data.ratioPercent.toLocaleString("pl-PL", { maximumFractionDigits: 2 })}%`} />
-              <EsgMetric icon={reserve.data.status === "covered" ? ShieldCheck : TriangleAlert} label={Number(reserve.data.surplusUsd) >= 0 ? "Nadwyżka" : "Niedobór"} value={`${reserve.data.surplusUsd} USD`} />
-            </div>}
-            {reserve.data && <div className={`mt-4 rounded-xl border p-3 text-sm ${reserve.data.status === "covered" ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300" : "border-rose-500/30 bg-rose-500/10 text-rose-300"}`}>{reserve.data.status === "covered" ? "Rezerwa w pełni pokrywa aktualną podaż rUSD." : "Rezerwa nie pokrywa aktualnej podaży rUSD. Jest to sygnał monitorujący — token nie jest jeszcze automatycznie blokowany."}</div>}
-          </CardContent>
-        </Card>
-      </section>
-      {esg.data && <section className="mt-4">
-        <Card>
-          <CardHeader className="flex-row items-start justify-between gap-4">
-            <div><CardTitle>Dzienne estymaty środowiskowe</CardTitle><CardDescription>Dane prowizoryczne dla {esg.data.currentDay.dateUtc}, aktualizowane wraz z obserwacją blockchaina.</CardDescription></div>
-            <button className="flex shrink-0 items-center gap-2 rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800" onClick={() => setDetailsOpen(true)}><Info className="size-4" /> Jak obliczono?</button>
+        {esg.data && <Card className="esg-panel">
+          <CardHeader className="flex-row items-start justify-between gap-3">
+            <div><CardTitle>Estymowane zużycie energii tokena</CardTitle><CardDescription>Aktywność rUSD · {esg.data.currentDay.dateUtc} · dane prowizoryczne</CardDescription></div>
+            <button aria-label="Pokaż sposób obliczania estymaty" title="Jak obliczono estymatę?" className="flex size-8 shrink-0 items-center justify-center rounded-full border border-slate-700 text-slate-300 hover:border-teal-500/60 hover:bg-slate-800 hover:text-teal-300" onClick={() => setDetailsOpen(true)}><CircleHelp className="size-4" /></button>
           </CardHeader>
           <CardContent>
-            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-              <EsgMetric icon={Activity} label="Transakcje tokenu" value={esg.data.currentDay.transactionCount.toLocaleString("pl-PL")} />
-              <EsgMetric icon={Zap} label="Najlepsza estymata" value={`${esg.data.currentDay.energyBestGuessWh.toLocaleString("pl-PL", { maximumFractionDigits: 3 })} Wh`} />
+            <div className="esg-metrics">
+              <EsgMetric icon={Activity} label="Transakcje" value={esg.data.currentDay.transactionCount.toLocaleString("pl-PL")} />
+              <EsgMetric icon={Zap} label="Energia" value={`${esg.data.currentDay.energyBestGuessWh.toLocaleString("pl-PL", { maximumFractionDigits: 3 })} Wh`} />
               <EsgMetric icon={Leaf} label="Emisje" value={`${esg.data.currentDay.emissionsGCo2e.toLocaleString("pl-PL", { maximumFractionDigits: 3 })} g CO₂e`} />
-              <EsgMetric icon={Blocks} label="Przetworzony blok" value={esg.data.lastProcessedBlock.toLocaleString("pl-PL")} />
+              <EsgMetric icon={Blocks} label="Blok" value={esg.data.lastProcessedBlock.toLocaleString("pl-PL")} />
             </div>
-            <div className="mt-5 grid gap-3 md:grid-cols-3">
-              <EnergyPart label="OZE" percent={esg.data.methodology.renewablePercent} value={esg.data.currentDay.renewableEnergyWh} color="bg-emerald-400" />
-              <EnergyPart label="Energia jądrowa" percent={esg.data.methodology.nuclearPercent} value={esg.data.currentDay.nuclearEnergyWh} color="bg-violet-400" />
-              <EnergyPart label="Paliwa kopalne" percent={esg.data.methodology.fossilPercent} value={esg.data.currentDay.fossilEnergyWh} color="bg-amber-400" />
-            </div>
-            {esgHistory.data && <div className="mt-8 border-t border-slate-800 pt-6">
-              <div className="mb-4 flex items-center justify-between"><div><p className="font-medium text-slate-200">Ostatnie 7 dni</p><p className="text-xs text-slate-500">Linia: najlepsza estymata · pasmo: dolny i górny scenariusz Cambridge</p></div><Badge className="border-slate-700 bg-slate-800 text-slate-300">Wh</Badge></div>
+            <EnergyMixBar renewablePercent={esg.data.methodology.renewablePercent} nuclearPercent={esg.data.methodology.nuclearPercent} fossilPercent={esg.data.methodology.fossilPercent} renewableWh={esg.data.currentDay.renewableEnergyWh} nuclearWh={esg.data.currentDay.nuclearEnergyWh} fossilWh={esg.data.currentDay.fossilEnergyWh} />
+            {esgHistory.data && <div className="esg-history">
+              <div className="mb-2 flex items-center justify-between"><div><p className="text-sm font-medium text-slate-200">Estymowane zużycie energii · 7 dni</p><p className="text-[10px] text-slate-500">Najlepsza estymata wraz z dolnym i górnym scenariuszem</p></div><Badge className="border-slate-700 bg-slate-800 text-slate-300">Wh</Badge></div>
               <EsgEnergyChart days={esgHistory.data.days} />
             </div>}
           </CardContent>
-        </Card>
-        <Dialog open={detailsOpen} onClose={() => setDetailsOpen(false)} title="Jak obliczono estymatę?">
+        </Card>}
+      </section>
+      {esg.data && <Dialog open={detailsOpen} onClose={() => setDetailsOpen(false)} title="O estymacie zużycia energii">
           <div className="space-y-4 text-sm leading-6 text-slate-300">
-            <p>{esg.data.methodology.note}</p>
-            <p>Cambridge modeluje całą sieć Ethereum PoS w trzech scenariuszach rocznych: <strong>1,26 GWh</strong> (dolny), <strong>7,87 GWh</strong> (best guess) i <strong>11,49 GWh</strong> (górny). Granice opisują różne profile sprzętu i hostingu; nie są statystycznym przedziałem ufności.</p>
-            <p>System dzieli każdy scenariusz przez założone <strong>{esg.data.methodology.annualTransactionsAssumption.toLocaleString("pl-PL")}</strong> transakcji Ethereum rocznie. Daje to odpowiednio <strong>{esg.data.methodology.lowerEnergyWhPerTransaction} Wh</strong>, <strong>{esg.data.methodology.bestGuessEnergyWhPerTransaction} Wh</strong> i <strong>{esg.data.methodology.upperEnergyWhPerTransaction} Wh</strong> na transakcję tokenu.</p>
-            <p>Każda unikalna transakcja emitująca <code className="text-teal-300">Transfer</code> jest mnożona przez wszystkie trzy współczynniki. Jest to demonstracyjna alokacja wpływu sieci, a nie pomiar energii wywołanej konkretnym transferem.</p>
-            <p>Miks: {esg.data.methodology.renewablePercent}% OZE, {esg.data.methodology.nuclearPercent}% energii jądrowej i {esg.data.methodology.fossilPercent}% paliw kopalnych. Niewielka różnica do 100% wynika z zaokrągleń danych źródłowych.</p>
-            <a className="inline-flex text-teal-300 underline decoration-teal-500/40 underline-offset-4" href={esg.data.methodology.sourceUrl} target="_blank" rel="noreferrer">{esg.data.methodology.sourceName}</a>
-            <p className="text-xs text-slate-500">Wersja metodologii: {esg.data.methodology.version}</p>
+            <p>Panel przedstawia <strong>estymowane zużycie energii przypisane transakcjom rUSD</strong>. Nie jest to bezpośredni pomiar energii zużytej przez token ani dodatkowego obciążenia wywołanego przez pojedynczą transakcję.</p>
+            <div className="rounded-lg border border-slate-800 bg-slate-950/50 p-3">
+              <p className="font-medium text-slate-100">Podstawa estymaty</p>
+              <p className="mt-1">Dane Cambridge opisują roczne zużycie energii całej sieci Ethereum PoS w trzech scenariuszach: <strong>1,26 GWh</strong> (dolny), <strong>7,87 GWh</strong> (najlepsza estymata) oraz <strong>11,49 GWh</strong> (górny).</p>
+            </div>
+            <div>
+              <p className="font-medium text-slate-100">Sposób przypisania energii do rUSD</p>
+              <p className="mt-1">Każdy scenariusz jest dzielony przez założone <strong>{esg.data.methodology.annualTransactionsAssumption.toLocaleString("pl-PL")}</strong> transakcji Ethereum rocznie. Następnie liczba zaobserwowanych transakcji rUSD jest mnożona przez uzyskane współczynniki: <strong>{esg.data.methodology.lowerEnergyWhPerTransaction}–{esg.data.methodology.upperEnergyWhPerTransaction} Wh na transakcję</strong>, przy najlepszej estymacie <strong>{esg.data.methodology.bestGuessEnergyWhPerTransaction} Wh</strong>.</p>
+            </div>
+            <p>Dolna i górna wartość pokazują alternatywne scenariusze sprzętu i hostingu. Nie są statystycznym przedziałem ufności.</p>
+            <p>Prezentowany miks energetyczny wynosi: {esg.data.methodology.renewablePercent}% OZE, {esg.data.methodology.nuclearPercent}% energii jądrowej i {esg.data.methodology.fossilPercent}% paliw kopalnych.</p>
+            <a className="inline-flex text-teal-300 underline decoration-teal-500/40 underline-offset-4" href={esg.data.methodology.sourceUrl} target="_blank" rel="noreferrer">Źródło danych: {esg.data.methodology.sourceName}</a>
+            <p className="text-xs text-slate-500">Metodologia demonstracyjna: {esg.data.methodology.version}</p>
           </div>
-        </Dialog>
-      </section>}
+      </Dialog>}
     </main>
   )
 }
 
-function EsgMetric({ icon: Icon, label, value }: { icon: typeof Activity; label: string; value: string }) { return <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-4"><Icon className="mb-3 size-4 text-teal-400" /><p className="text-xs text-slate-500">{label}</p><p className="mt-1 text-xl font-semibold text-white">{value}</p></div> }
-function EnergyPart({ label, percent, value, color }: { label: string; percent: number; value: number; color: string }) { return <div><div className="mb-2 flex justify-between text-xs"><span className="text-slate-400">{label}</span><span className="text-slate-200">{percent}% · {value.toLocaleString("pl-PL", { maximumFractionDigits: 3 })} Wh</span></div><div className="h-2 overflow-hidden rounded-full bg-slate-800"><div className={`h-full ${color}`} style={{ width: `${percent}%` }} /></div></div> }
+function EsgMetric({ icon: Icon, label, value }: { icon: typeof Activity; label: string; value: string }) { return <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-2.5"><div className="flex items-center gap-2"><Icon className="size-3.5 text-teal-400" /><p className="text-[10px] text-slate-500">{label}</p></div><p className="mt-1.5 truncate text-base font-semibold text-white">{value}</p></div> }
+function EnergyMixBar({ renewablePercent, nuclearPercent, fossilPercent, renewableWh, nuclearWh, fossilWh }: { renewablePercent: number; nuclearPercent: number; fossilPercent: number; renewableWh: number; nuclearWh: number; fossilWh: number }) {
+  const parts = [
+    { label: "Odnawialne źródła energii", short: "OZE", percent: renewablePercent, value: renewableWh, color: "bg-emerald-400", dot: "bg-emerald-400" },
+    { label: "Energia jądrowa", short: "Jądrowa", percent: nuclearPercent, value: nuclearWh, color: "bg-violet-400", dot: "bg-violet-400" },
+    { label: "Paliwa kopalne", short: "Kopalne", percent: fossilPercent, value: fossilWh, color: "bg-amber-400", dot: "bg-amber-400" },
+  ]
+  return <div className="mt-3 rounded-lg border border-slate-800 bg-slate-950/40 p-2.5"><div className="mb-2 flex items-center justify-between gap-3"><p className="text-xs font-medium text-slate-200">Miks źródeł energii</p><p className="text-sm font-semibold text-white">{(renewableWh + nuclearWh + fossilWh).toLocaleString("pl-PL", { maximumFractionDigits: 3 })} Wh</p></div><div className="flex h-3 overflow-hidden rounded-full bg-slate-800" aria-label="Udział źródeł energii">{parts.map(part=><div key={part.short} className={`${part.color} h-full`} style={{ width: `${part.percent}%` }} title={`${part.label}: ${part.percent}%`} />)}</div><div className="mt-2 flex gap-3">{parts.map(part=><div key={part.label} className="flex min-w-0 flex-1 items-start gap-1.5"><span className={`mt-1 size-2 shrink-0 rounded-full ${part.dot}`} /><div className="min-w-0"><p className="truncate text-[10px] text-slate-400">{part.short}</p><p className="truncate text-[11px] font-medium text-slate-100">{part.percent}% · {part.value.toLocaleString("pl-PL", { maximumFractionDigits: 2 })} Wh</p></div></div>)}</div></div>
+}
 
 function Metric({ icon: Icon, label, value, detail, mono = false }: { icon: typeof Activity; label: string; value: string; detail: string; mono?: boolean }) {
-  return <Card><CardHeader className="flex-row items-center justify-between pb-3"><CardDescription>{label}</CardDescription><Icon className="size-4 text-teal-400" /></CardHeader><CardContent><p className={`truncate text-2xl font-semibold text-white ${mono ? "font-mono text-xl" : ""}`}>{value}</p><p className="mt-1 truncate text-xs text-slate-500">{detail}</p></CardContent></Card>
+  return <article className="overview-metric" title={detail}><Icon className="size-4 text-teal-400" /><span>{label}</span><strong className={mono ? "font-mono" : ""}>{value}</strong></article>
 }
 
 function StatusRow({ label, value }: { label: string; value: string }) {
@@ -164,7 +190,7 @@ function StatusRow({ label, value }: { label: string; value: string }) {
 }
 
 function DashboardLoading() {
-  return <main className="mx-auto min-h-screen max-w-7xl p-8"><Skeleton className="mb-8 h-20 w-96 max-w-full" /><div className="grid gap-4 md:grid-cols-4">{Array.from({ length: 4 }).map((_, index) => <Skeleton key={index} className="h-36" />)}</div><Skeleton className="mt-4 h-96" /></main>
+  return <main className="issuer-dashboard"><Skeleton className="mb-4 h-16 w-96 max-w-full" /><div className="dashboard-metrics">{Array.from({ length: 4 }).map((_, index) => <Skeleton key={index} className="h-24" />)}</div><Skeleton className="mt-3 h-72" /></main>
 }
 
 function connectionLabel(connection: "connecting" | "live" | "disconnected") {

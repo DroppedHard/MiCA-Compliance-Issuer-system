@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import type { ReserveCoverage } from "@/domain/reserve"
 import type { TokenObservation } from "@/domain/token"
-import { buildSupplyReservePoints } from "./supply-chart"
+import { buildSupplyReservePoints, selectChartWindow } from "./supply-chart"
 
 const token = (observedAtUnixMs: number, totalSupplyRaw: string): TokenObservation => ({
   observedAtUnixMs,
@@ -46,5 +46,19 @@ describe("supply and reserve chart", () => {
       { observedAtUnixMs: 3_000, supply: 4200, reserve: 5000 },
       { observedAtUnixMs: 4_000, supply: 4200, reserve: 4700 },
     ])
+  })
+
+  it("keeps the selected window and the newest observation in each sampling bucket", () => {
+    const points = [0, 10, 20, 70, 130].map((seconds) => ({
+      observedAtUnixMs: seconds * 1_000,
+      time: String(seconds),
+      supply: seconds,
+    }))
+
+    expect(selectChartWindow(points, {
+      id: "medium",
+      sampleIntervalMs: 60_000,
+      rangeMs: 120_000,
+    }).map((point) => point.observedAtUnixMs)).toEqual([20_000, 70_000, 130_000])
   })
 })
