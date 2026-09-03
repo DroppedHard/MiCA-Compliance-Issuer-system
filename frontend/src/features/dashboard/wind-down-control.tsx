@@ -19,7 +19,7 @@ export function WindDownControl({ state }: { state?: AssetState["state"] }) {
   })
 
   if (state === "wind_down") {
-    return <p className="mt-3 border-t border-current/20 pt-3 font-medium">Wygaszanie jest aktywne on-chain. Emisja i zwykłe transfery są zablokowane, a wykupy pozostają dostępne.</p>
+    return <p className="mt-3 border-t border-current/20 pt-3 font-medium">Wygaszanie jest aktywne w łańcuchu bloków. Emisja i zwykłe transfery są zablokowane, a wykupy pozostają dostępne.</p>
   }
 
   return <>
@@ -54,7 +54,7 @@ export function WindDownControl({ state }: { state?: AssetState["state"] }) {
             disabled={!reason.trim() || mutation.isPending}
             onClick={() => mutation.mutate()}
           >
-            {mutation.isPending ? "Oczekiwanie na blockchain…" : "Potwierdź wygaszanie"}
+            {mutation.isPending ? "Oczekiwanie na łańcuch bloków…" : "Potwierdź wygaszanie"}
           </button>
         </div>
       </div>

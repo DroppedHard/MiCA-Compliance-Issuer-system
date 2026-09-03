@@ -1,6 +1,6 @@
 import { useState } from "react"
 import { useQuery } from "@tanstack/react-query"
-import { Activity, Blocks, CircleDollarSign, CircleHelp, Database, Leaf, Radio, ShieldCheck, TriangleAlert, Zap } from "lucide-react"
+import { Activity, Blocks, CircleHelp, Leaf, Radio, ShieldCheck, TriangleAlert, Zap } from "lucide-react"
 import { reserveQueryOptions } from "@/application/queries/reserve-query"
 import { assetStateQueryOptions } from "@/application/queries/asset-state-query"
 import { useAssetStateStream } from "@/application/realtime/use-asset-state-stream"
@@ -13,12 +13,13 @@ import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Dialog } from "@/components/ui/dialog"
-import { formatTokenAmount, shortenAddress } from "@/domain/token"
+import { formatTokenAmount } from "@/domain/token"
 import { assetStateLabel } from "@/domain/asset-state"
 import { SupplyChart, type SupplyChartPreset } from "./supply-chart"
 import { EsgEnergyChart } from "./esg-energy-chart"
 import { WindDownControl } from "./wind-down-control"
 import { ReserveAdjustmentControl } from "./reserve-adjustment-control"
+import { AddressBlacklistControl } from "./address-blacklist-control"
 
 const chartPresets: Array<SupplyChartPreset & { pollLabel: string; rangeLabel: string }> = [
   { id: "live", sampleIntervalMs: 10_000, rangeMs: 60 * 60_000, pollLabel: "co 10 s", rangeLabel: "zakres 1 h" },
@@ -45,17 +46,17 @@ export function AdminDashboard() {
     return (
       <main className="grid min-h-screen place-items-center p-6">
         <Card className="max-w-lg border-rose-500/30">
-          <CardHeader><CardTitle>Backend jest niedostępny</CardTitle></CardHeader>
+          <CardHeader><CardTitle>Usługa emitenta jest niedostępna</CardTitle></CardHeader>
           <CardContent className="space-y-3 text-sm text-slate-400">
             <p>Szczegóły techniczne: {token.error.message}</p>
-            <p>Uruchom lokalny blockchain, wdroż token i włącz backend w Rust. Panel automatycznie ponowi próbę.</p>
+            <p>Uruchom lokalny łańcuch bloków, wdroż token i włącz usługę emitenta napisaną w języku Rust. Panel automatycznie ponowi próbę.</p>
           </CardContent>
         </Card>
       </main>
     )
   }
 
-  const { snapshot, observedAtUnixMs } = token.data
+  const { snapshot } = token.data
   const supply = formatTokenAmount(snapshot.totalSupplyRaw, snapshot.decimals)
 
   return (
@@ -73,19 +74,19 @@ export function AdminDashboard() {
         </div>
       </header>
 
-      <section className="dashboard-overview">
-        <div className="parity-summary" title="Stałe odniesienie emisji i wykupu"><span>Parytet emitenta</span><strong>1 rUSD = 1 USD</strong></div>
-        <Metric icon={CircleDollarSign} label="Całkowita podaż" value={`${supply} ${snapshot.symbol}`} detail={`${snapshot.decimals} miejsc dziesiętnych`} />
-        <Metric icon={Blocks} label="Najnowszy blok" value={snapshot.blockNumber.toLocaleString("pl-PL")} detail={`Identyfikator sieci ${snapshot.chainId}`} />
-        <Metric icon={Database} label="Kontrakt" value={shortenAddress(snapshot.contractAddress)} detail={snapshot.name} mono />
-        <Metric icon={Activity} label="Czas obserwacji" value={new Date(observedAtUnixMs).toLocaleTimeString("pl-PL")} detail={new Date(observedAtUnixMs).toLocaleDateString("pl-PL")} />
-      </section>
+      {/* Identyfikator kontraktu i czas obserwacji pozostają dostępne w API,
+          ale są celowo ukryte w demonstracyjnym panelu administratora. */}
 
       <section className="dashboard-workspace">
         <aside className="admin-actions">
           <Card className={reserve.data?.status === "undercollateralized" ? "border-rose-500/40" : undefined}>
-            <CardHeader><CardTitle>Rezerwy</CardTitle><CardDescription>Pokrycie podaży i testowa korekta mockBanku.</CardDescription></CardHeader>
+            <CardHeader><CardTitle>Podaż, rezerwy i stan</CardTitle><CardDescription>Najważniejsze dane emitenta w jednym miejscu.</CardDescription></CardHeader>
             <CardContent>
+              <div className="reserve-summary">
+                <StatusRow label="Parytet emitenta" value="1 rUSD = 1 USD" />
+                <StatusRow label="Całkowita podaż" value={`${supply} ${snapshot.symbol}`} />
+                <StatusRow label="Najnowszy blok" value={snapshot.blockNumber.toLocaleString("pl-PL")} />
+              </div>
               {reserve.isPending && <Skeleton className="h-24" />}
               {reserve.isError && <div className="flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-200"><TriangleAlert className="size-4" /> Brak danych z mockBanku.</div>}
               {reserve.data && <div className="reserve-summary">
@@ -95,18 +96,19 @@ export function AdminDashboard() {
                 <StatusRow label={Number(reserve.data.surplusUsd) >= 0 ? "Nadwyżka" : "Niedobór"} value={`${reserve.data.surplusUsd} USD`} />
               </div>}
               {reserve.data && <p className={`reserve-state ${reserve.data.status === "covered" ? "covered" : "uncovered"}`}>{reserve.data.status === "covered" ? "Rezerwa pokrywa podaż rUSD." : "Nowa emisja jest zablokowana; wykup pozostaje dostępny."}</p>}
+              {assetState.data && <div className={`mt-3 rounded-xl border p-3 text-xs leading-5 ${assetStateClasses(assetState.data.state)}`}>
+                <div className="flex items-center gap-2"><ShieldCheck className="size-4" /><strong>{assetStateLabel(assetState.data.state)}</strong></div>
+                <p className="mt-1">{assetStateReason(assetState.data.state)}</p>
+              </div>}
               <ReserveAdjustmentControl />
             </CardContent>
           </Card>
-          <Card className="border-rose-500/20">
-            <CardHeader><CardTitle>Wygaszanie tokenu</CardTitle><CardDescription>Nieodwracalna blokada emisji i zwykłych transferów.</CardDescription></CardHeader>
-            <CardContent><WindDownControl state={assetState.data?.state} /></CardContent>
-          </Card>
         </aside>
 
+        <section className="monitoring-column">
         <Card className="chart-panel">
           <CardHeader className="flex-row items-start justify-between gap-4">
-            <div><CardTitle>Podaż i rezerwa</CardTitle><CardDescription>Dane z cache backendu otrzymywane przez SSE.</CardDescription></div>
+            <div><CardTitle>Podaż i rezerwa</CardTitle><CardDescription>Dane z pamięci podręcznej usługi otrzymywane przez strumień SSE.</CardDescription></div>
             <div className="chart-presets" aria-label="Ustawienia zakresu wykresu">
               {chartPresets.map((preset) => <button key={preset.id} className={chartPreset.id === preset.id ? "active" : ""} onClick={() => setChartPreset(preset)}><strong>{preset.pollLabel}</strong><span>{preset.rangeLabel}</span></button>)}
             </div>
@@ -114,22 +116,6 @@ export function AdminDashboard() {
           <CardContent><SupplyChart latestToken={token.data} latestReserve={reserve.data} preset={chartPreset} /></CardContent>
         </Card>
 
-        <Card className="system-panel">
-          <CardHeader><CardTitle>Stan systemu</CardTitle><CardDescription>Bieżący stan połączeń między warstwami.</CardDescription></CardHeader>
-          <CardContent className="space-y-4">
-            <StatusRow label="Ostatni odczyt backendu" value={new Date(observedAtUnixMs).toLocaleTimeString("pl-PL")} />
-            <StatusRow label="Cache backendu" value="Pamięć procesu · 24 godz." />
-            <StatusRow label="Transport" value="SSE + inicjalizacja HTTP" />
-            {assetState.isPending && <Skeleton className="h-28" />}
-            {assetState.isError && <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-xs text-amber-200">Nie udało się odczytać decyzji emitenta.</div>}
-            {assetState.data && <div className={`rounded-xl border p-4 text-xs leading-6 ${assetStateClasses(assetState.data.state)}`}>
-              <ShieldCheck className="mb-2 size-5" />
-              <div className="flex items-center justify-between gap-3"><strong className="text-sm">{assetStateLabel(assetState.data.state)}</strong><span className="font-mono text-[10px]">{assetState.data.policyVersion}</span></div>
-              <p className="mt-2">{assetState.data.reason}</p>
-              <p className="mt-2 opacity-70">Ostatnia decyzja: {new Date(assetState.data.updatedAtUnixMs).toLocaleString("pl-PL")}</p>
-            </div>}
-          </CardContent>
-        </Card>
         {esg.data && <Card className="esg-panel">
           <CardHeader className="flex-row items-start justify-between gap-3">
             <div><CardTitle>Estymowane zużycie energii tokena</CardTitle><CardDescription>Aktywność rUSD · {esg.data.currentDay.dateUtc} · dane prowizoryczne</CardDescription></div>
@@ -149,6 +135,15 @@ export function AdminDashboard() {
             </div>}
           </CardContent>
         </Card>}
+        </section>
+
+        <aside className="compliance-actions">
+          <Card className="border-rose-500/20">
+            <CardHeader><CardTitle>Wygaszanie tokenu</CardTitle><CardDescription>Nieodwracalna blokada emisji i zwykłych transferów.</CardDescription></CardHeader>
+            <CardContent><WindDownControl state={assetState.data?.state} /></CardContent>
+          </Card>
+          <Card><CardContent className="pt-4"><AddressBlacklistControl /></CardContent></Card>
+        </aside>
       </section>
       {esg.data && <Dialog open={detailsOpen} onClose={() => setDetailsOpen(false)} title="O estymacie zużycia energii">
           <div className="space-y-4 text-sm leading-6 text-slate-300">
@@ -181,10 +176,6 @@ function EnergyMixBar({ renewablePercent, nuclearPercent, fossilPercent, renewab
   return <div className="mt-3 rounded-lg border border-slate-800 bg-slate-950/40 p-2.5"><div className="mb-2 flex items-center justify-between gap-3"><p className="text-xs font-medium text-slate-200">Miks źródeł energii</p><p className="text-sm font-semibold text-white">{(renewableWh + nuclearWh + fossilWh).toLocaleString("pl-PL", { maximumFractionDigits: 3 })} Wh</p></div><div className="flex h-3 overflow-hidden rounded-full bg-slate-800" aria-label="Udział źródeł energii">{parts.map(part=><div key={part.short} className={`${part.color} h-full`} style={{ width: `${part.percent}%` }} title={`${part.label}: ${part.percent}%`} />)}</div><div className="mt-2 flex gap-3">{parts.map(part=><div key={part.label} className="flex min-w-0 flex-1 items-start gap-1.5"><span className={`mt-1 size-2 shrink-0 rounded-full ${part.dot}`} /><div className="min-w-0"><p className="truncate text-[10px] text-slate-400">{part.short}</p><p className="truncate text-[11px] font-medium text-slate-100">{part.percent}% · {part.value.toLocaleString("pl-PL", { maximumFractionDigits: 2 })} Wh</p></div></div>)}</div></div>
 }
 
-function Metric({ icon: Icon, label, value, detail, mono = false }: { icon: typeof Activity; label: string; value: string; detail: string; mono?: boolean }) {
-  return <article className="overview-metric" title={detail}><Icon className="size-4 text-teal-400" /><span>{label}</span><strong className={mono ? "font-mono" : ""}>{value}</strong></article>
-}
-
 function StatusRow({ label, value }: { label: string; value: string }) {
   return <div className="flex items-center justify-between border-b border-slate-800 pb-3 text-sm"><span className="text-slate-400">{label}</span><span className="font-medium text-slate-200">{value}</span></div>
 }
@@ -206,4 +197,14 @@ function assetStateClasses(state: "active" | "warning" | "mint_blocked" | "data_
   if (state === "warning") return "border-amber-500/30 bg-amber-500/10 text-amber-200"
   if (state === "data_unavailable") return "border-slate-700 bg-slate-900 text-slate-300"
   return "border-rose-500/30 bg-rose-500/10 text-rose-300"
+}
+
+function assetStateReason(state: "active" | "warning" | "mint_blocked" | "data_unavailable" | "wind_down") {
+  return {
+    active: "Emisja, wykup i transfery są dostępne.",
+    warning: "Wykryto ryzyko dla pokrycia rezerw; operacje pozostają dostępne.",
+    mint_blocked: "Nowa emisja jest zablokowana; wykup pozostaje dostępny.",
+    data_unavailable: "Brak wystarczających danych do potwierdzenia stanu rezerw.",
+    wind_down: "Token jest wygaszany: emisja i zwykłe transfery są zablokowane.",
+  }[state]
 }

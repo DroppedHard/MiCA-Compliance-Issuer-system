@@ -28,13 +28,16 @@ button, input { font: inherit; }
 .issuer-dashboard .overview-metric strong { margin-top: 3px; overflow: hidden; color: #f8fafc; font-size: 15px; line-height: 18px; text-overflow: ellipsis; white-space: nowrap; }
 .issuer-dashboard .overview-metric svg { position: absolute; align-self: flex-end; }
 .issuer-dashboard .overview-metric { position: relative; }
-.issuer-dashboard .dashboard-workspace { display: flex; height: calc(100vh - 124px); min-height: 650px; align-items: stretch; gap: 6px; margin-top: 6px; }
-.issuer-dashboard .admin-actions { display: flex; width: 340px; flex: 0 0 340px; flex-direction: column; gap: 6px; }
+.issuer-dashboard .dashboard-workspace { display: flex; height: calc(100vh - 66px); min-height: 650px; align-items: stretch; gap: 6px; margin-top: 6px; }
+.issuer-dashboard .admin-actions { display: flex; width: 390px; flex: 0 0 390px; flex-direction: column; gap: 6px; overflow-y: auto; scrollbar-width: thin; }
 .issuer-dashboard .admin-actions > :first-child { flex: 1 1 auto; }
 .issuer-dashboard .admin-actions > :last-child { flex: 0 0 auto; }
-.issuer-dashboard .chart-panel { width: 650px; flex: 0 0 650px; }
-.issuer-dashboard .system-panel { width: 290px; flex: 0 0 290px; }
-.issuer-dashboard .esg-panel { min-width: 0; flex: 1 1 auto; }
+.issuer-dashboard .monitoring-column { display: flex; min-width: 0; flex: 1 1 auto; flex-direction: column; gap: 6px; }
+.issuer-dashboard .chart-panel { min-height: 0; flex: 0 0 42%; }
+.issuer-dashboard .esg-panel { min-width: 0; min-height: 0; flex: 1 1 auto; }
+.issuer-dashboard .compliance-actions { display: flex; width: 390px; flex: 0 0 390px; flex-direction: column; gap: 6px; overflow-y: auto; scrollbar-width: thin; }
+.issuer-dashboard .compliance-actions > * { flex: 0 0 auto; }
+.issuer-dashboard .compliance-actions > :last-child { flex: 1 1 auto; }
 .issuer-dashboard .chart-presets { display: flex; flex: 0 0 auto; gap: 5px; }
 .issuer-dashboard .chart-presets button { display: flex; min-width: 78px; flex-direction: column; border: 1px solid #334155; border-radius: 8px; background: rgba(15,23,42,.8); padding: 5px 8px; color: #94a3b8; text-align: left; }
 .issuer-dashboard .chart-presets button strong { font-size: 10px; font-weight: 600; }
@@ -47,3 +50,4 @@ button, input { font: inherit; }
 .issuer-dashboard .esg-metrics { display: flex; gap: 5px; }
 .issuer-dashboard .esg-metrics > * { min-width: 0; flex: 1 1 0; }
 .issuer-dashboard .esg-history { margin-top: 12px; border-top: 1px solid #1e293b; padding-top: 10px; }
+.address-blacklist-control{display:grid;gap:10px}.address-blacklist-control form{display:grid;gap:7px}.address-blacklist-control label{display:grid;gap:4px;color:#94a3b8;font-size:11px}.address-blacklist-control input{min-width:0;border:1px solid #334155;border-radius:7px;background:#020617;padding:7px 8px;color:#f8fafc;font-size:12px}.address-blacklist-control form button{border:1px solid rgba(244,63,94,.35);border-radius:7px;background:rgba(244,63,94,.12);padding:7px;color:#fda4af;font-size:11px}.address-blacklist-control button:disabled{opacity:.5}.address-blacklist-items{display:grid;max-height:118px;gap:5px;overflow:auto}.address-blacklist-items>p{color:#64748b;font-size:11px}.address-blacklist-items article{display:flex;align-items:center;justify-content:space-between;gap:7px;border-top:1px solid #1e293b;padding-top:5px}.address-blacklist-items article div{display:grid;min-width:0}.address-blacklist-items strong,.address-blacklist-items span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.address-blacklist-items strong{color:#e2e8f0;font-family:ui-monospace,monospace;font-size:10px}.address-blacklist-items span{color:#64748b;font-size:10px}.address-blacklist-items article button{color:#fda4af}.address-blacklist-items svg{width:14px}
