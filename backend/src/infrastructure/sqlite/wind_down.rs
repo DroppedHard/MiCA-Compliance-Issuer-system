@@ -13,7 +13,7 @@ impl SqliteWindDownAuditStore {
         }
         let connection = Connection::open(path).map_err(storage)?;
         connection
-            .execute_batch(include_str!("../../migrations/0007_wind_down_audit.sql"))
+            .execute_batch(include_str!("../../../migrations/0007_wind_down_audit.sql"))
             .map_err(storage)?;
         Ok(Self {
             connection: Mutex::new(connection),

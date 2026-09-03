@@ -14,7 +14,7 @@ impl SqliteAddressRestrictionStore {
         let connection = Connection::open(path).map_err(storage)?;
         connection
             .execute_batch(include_str!(
-                "../../migrations/0009_address_restrictions.sql"
+                "../../../migrations/0009_address_restrictions.sql"
             ))
             .map_err(storage)?;
         Ok(Self {

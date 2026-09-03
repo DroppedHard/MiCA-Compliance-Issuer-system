@@ -1,6 +1,7 @@
 use super::{CacheError, EsgStore, EsgStoreError, SnapshotCache, TokenReadError, TokenReader};
 use crate::domain::{EsgObservation, TokenObservation};
 use std::{
+    fmt::Debug,
     sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };

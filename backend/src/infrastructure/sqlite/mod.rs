@@ -1,3 +1,11 @@
+pub mod address_restrictions;
+pub mod asset_state;
+pub mod casp_reporting;
+pub mod issuance;
+pub mod operation_decisions;
+pub mod redemption;
+pub mod wind_down;
+
 use crate::{
     application::{EsgStore, EsgStoreError},
     config::esg,
@@ -23,7 +31,7 @@ impl SqliteEsgStore {
         }
         let connection = Connection::open(path).map_err(storage)?;
         connection
-            .execute_batch(include_str!("../../migrations/0001_esg.sql"))
+            .execute_batch(include_str!("../../../migrations/0001_esg.sql"))
             .map_err(storage)?;
         ensure_column(
             &connection,

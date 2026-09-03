@@ -13,7 +13,7 @@ impl SqliteRedemptionStore {
             fs::create_dir_all(p).map_err(storage)?
         }
         let c = Connection::open(path).map_err(storage)?;
-        c.execute_batch(include_str!("../../migrations/0003_redemption.sql"))
+        c.execute_batch(include_str!("../../../migrations/0003_redemption.sql"))
             .map_err(storage)?;
         Ok(Self {
             connection: Mutex::new(c),

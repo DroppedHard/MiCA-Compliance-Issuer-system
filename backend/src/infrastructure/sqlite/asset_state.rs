@@ -16,7 +16,7 @@ impl SqliteAssetStateStore {
         }
         let connection = Connection::open(path).map_err(storage)?;
         connection
-            .execute_batch(include_str!("../../migrations/0004_asset_state.sql"))
+            .execute_batch(include_str!("../../../migrations/0004_asset_state.sql"))
             .map_err(storage)?;
         Ok(Self {
             connection: Mutex::new(connection),

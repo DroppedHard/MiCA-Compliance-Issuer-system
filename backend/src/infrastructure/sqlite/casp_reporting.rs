@@ -17,7 +17,7 @@ impl SqliteCaspReportStore {
         }
         let connection = Connection::open(path).map_err(storage)?;
         connection
-            .execute_batch(include_str!("../../migrations/0008_casp_reporting.sql"))
+            .execute_batch(include_str!("../../../migrations/0008_casp_reporting.sql"))
             .map_err(storage)?;
         Ok(Self {
             connection: Mutex::new(connection),

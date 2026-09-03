@@ -17,7 +17,7 @@ impl SqliteOperationDecisionStore {
         let connection = Connection::open(path).map_err(storage)?;
         connection
             .execute_batch(include_str!(
-                "../../migrations/0006_operation_decisions.sql"
+                "../../../migrations/0006_operation_decisions.sql"
             ))
             .map_err(storage)?;
         Ok(Self {

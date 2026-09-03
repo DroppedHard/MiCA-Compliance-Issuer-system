@@ -16,7 +16,7 @@ impl SqliteIssuanceStore {
         }
         let connection = Connection::open(path).map_err(storage)?;
         connection
-            .execute_batch(include_str!("../../migrations/0002_issuance.sql"))
+            .execute_batch(include_str!("../../../migrations/0002_issuance.sql"))
             .map_err(storage)?;
         Ok(Self {
             connection: Mutex::new(connection),
