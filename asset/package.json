@@ -9,7 +9,8 @@
     "test": "hardhat test",
     "traffic": "hardhat run scripts/traffic.ts --network localhost",
     "supply-cycle": "hardhat run scripts/supply-cycle.ts --network localhost",
-    "external-deposit": "hardhat run scripts/external-deposit.ts --network localhost",
+    "external-deposit": "node scripts/run-external-deposit.mjs",
+    "compliance-threshold": "hardhat run scripts/compliance-threshold.ts --network localhost",
     "typecheck": "tsc --noEmit"
   },
   "keywords": [],

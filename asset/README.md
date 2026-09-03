@@ -15,11 +15,31 @@ The contract exposes a terminal `enterWindDown()` operation restricted by `WIND_
 - controlled issuance and redemption-side burning;
 - operation-correlated `mintForOperation`, which permanently rejects reuse of the same issuance identifier;
 - separate administrator, minter, burner, pauser, and freezer roles;
+- a reversible evidence-correlated activity issuance block that leaves transfers and redemption burns available;
 - a global pause covering transfers, issuance, and burning;
 - address freezing that prevents sending, receiving, minting to, and burning from an address;
 - standard ERC-20 events plus `MintOperationExecuted`, `AddressFrozen` and `AddressUnfrozen`.
 
 The legacy role-protected `mint` remains available to local simulation scripts. The issuer backend uses `mintForOperation` because its idempotency identifier crosses the bank, SQLite and blockchain boundary.
+
+Both mint functions enforce two reversible issuance controls. `issuanceBlocked` mirrors the latest complete activity-threshold assessment, while `reserveState` mirrors reserve health. Either may place the effective lifecycle in `IssuanceBlocked`; clearing one axis cannot override a block on the other. `tokenState()` exposes `Active`, `Warning`, `IssuanceBlocked` or terminal `WindDown`.
+
+## Verify the automatic activity-threshold block
+
+Start from a fresh complete Compose deployment, then run:
+
+```powershell
+cd issuer\asset
+npm.cmd run compliance-threshold
+```
+
+The command seeds one compact synthetic aggregate representing a full quarter at an average of `1,000,001` qualifying transactions and `EUR 200,000,000.01` per day. It verifies the persisted issuer assessment, the on-chain evidence hash, rejection of a direct mint, and continued availability of transfer and burn. It does not create one million physical blockchain transactions.
+
+Resetting the disposable chain and databases remains the simplest way to repeat the identical before/after scenario:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\reset-demo.ps1
+```
 
 The EURC inspiration concerns the operational model: controlled supply, separated roles, the ability to stop token movement, and address blocking. This implementation is intentionally smaller: it has no proxy, contract upgrades, EIP-3009 authorizations, permits, minter allowances, or cross-chain integration.
 
@@ -125,12 +145,23 @@ The Solidity tests verify contract rules and authorization. The TypeScript/viem 
 
 `CaspDepositRouter` accepts the hash of a CASP logical customer reference and transfers approved rUSD directly from the external sender to CASP hot custody. The external sender pays gas. Run the local example after Compose has deployed both contracts:
 
+From `issuer/asset`, pass the demo client identifier and rUSD amount after `--`:
+
 ```powershell
-$env:CASP_CLIENT_REFERENCE="rusd:casp:alice"
-$env:DEPOSIT_AMOUNT_RUSD="100"
-npm.cmd run external-deposit
+npm.cmd run external-deposit -- alice 100
 ```
 
-The script uses Hardhat account 1 as the simulated external sender, approves the router and calls `depositFor`. CASP waits for its configured confirmation depth and credits the matching internal ledger account exactly once.
+Allowed client identifiers are `alice`, `bob` and `carol`; the script converts them to the stable logical references `rusd:casp:<client>`. For example, the command above hashes `rusd:casp:alice`, approves the shared deposit router and deposits `100 rUSD`.
+
+The script uses Hardhat account 4 as a simulated external sender, so it is separate from the issuer and all three CASP wallets. It waits for transaction receipts, mines the configured two confirmation blocks and prints the sender, logical reference hash and transaction hash. The CASP observer polls every five seconds and credits the matching internal ledger account exactly once.
+
+Verify the result after a few seconds:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:3200/api/v1/clients/alice/account
+Invoke-RestMethod http://127.0.0.1:3200/api/v1/clients/alice/records
+```
 
 > **Demo-only funding:** before making the deposit, this script mints test rUSD directly to the external sender. This deliberately bypasses the issuer purchase and reserve workflow, so it must not be treated as a compliant issuance path. Use it only to demonstrate observation and attribution of an incoming on-chain transfer. The direct mint can temporarily make issuer reserve coverage inconsistent.
+
+If issuance is unavailable, direct-mint scripts now throw `MintBlockedError` instead of exposing viem's raw `unrecognized custom error`. The message distinguishes terminal wind-down, global pause, activity-threshold blocking and reserve-coverage blocking; evidence-backed restrictions also include their on-chain evidence hash.

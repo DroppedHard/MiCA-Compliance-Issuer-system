@@ -1,5 +1,6 @@
 import { formatUnits, isAddress, parseUnits } from "viem";
 import { network } from "hardhat";
+import { executeMintWithContext } from "./lib/mint-errors.js";
 
 const DECIMALS = 6;
 const DEFAULT_MINT_AMOUNT = "500";
@@ -24,9 +25,11 @@ const initialSupply = await token.read.totalSupply();
 console.log(`Connected to ResearchUsdEMT at ${tokenAddress}`);
 console.log(`Initial supply: ${formatUnits(initialSupply, DECIMALS)} rUSD`);
 
-const mintHash = await token.write.mint([holder.account.address, mintAmount], {
-  account: admin.account,
-});
+const mintHash = await executeMintWithContext(token, () =>
+  token.write.mint([holder.account.address, mintAmount], {
+    account: admin.account,
+  }),
+);
 const mintReceipt = await publicClient.waitForTransactionReceipt({ hash: mintHash });
 const supplyAfterMint = await token.read.totalSupply();
 console.log(

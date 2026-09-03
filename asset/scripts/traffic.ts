@@ -1,5 +1,6 @@
 import { formatUnits, isAddress, parseUnits } from "viem";
 import { network } from "hardhat";
+import { executeMintWithContext } from "./lib/mint-errors.js";
 
 const DECIMALS = 6;
 const STARTING_BALANCE = parseUnits("1000", DECIMALS);
@@ -28,9 +29,11 @@ for (const user of users) {
   if (balance >= STARTING_BALANCE) continue;
 
   const missingAmount = STARTING_BALANCE - balance;
-  const hash = await token.write.mint([user.account.address, missingAmount], {
-    account: admin.account,
-  });
+  const hash = await executeMintWithContext(token, () =>
+    token.write.mint([user.account.address, missingAmount], {
+      account: admin.account,
+    }),
+  );
   await publicClient.waitForTransactionReceipt({ hash });
   console.log(
     `Funded ${shortAddress(user.account.address)} with ${formatUnits(missingAmount, DECIMALS)} rUSD`,

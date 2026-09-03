@@ -107,4 +107,89 @@ describe("ResearchUsdEMT integration", async function () {
       "EnforcedPause",
     );
   });
+
+  it("blocks only issuance after activity-threshold evidence", async function () {
+    const token = await viem.deployContract("ResearchUsdEMT", [admin.account.address]);
+    const evidence = `0x${"33".repeat(32)}` as `0x${string}`;
+    const operationId = `0x${"44".repeat(32)}` as `0x${string}`;
+    const amount = 10n * 10n ** 6n;
+    await token.write.mint([holder.account.address, amount]);
+
+    await viem.assertions.emitWithArgs(
+      token.write.blockIssuance([evidence]),
+      token,
+      "IssuanceBlockedByEvidence",
+      [admin.account.address, evidence],
+    );
+    assert.equal(await token.read.issuanceBlocked(), true);
+    assert.equal(await token.read.issuanceBlockEvidence(), evidence);
+    await viem.assertions.revertWithCustomErrorWithArgs(
+      token.write.mint([recipient.account.address, 1n]),
+      token,
+      "IssuanceBlocked",
+      [evidence],
+    );
+    await viem.assertions.revertWithCustomErrorWithArgs(
+      token.write.mintForOperation([operationId, recipient.account.address, 1n]),
+      token,
+      "IssuanceBlocked",
+      [evidence],
+    );
+
+    await token.write.transfer([recipient.account.address, 1n], { account: holder.account });
+    await token.write.burn([holder.account.address, 1n]);
+    assert.equal(await token.read.balanceOf([recipient.account.address]), 1n);
+
+    // A newer assessment refreshes the evidence while keeping issuance blocked.
+    await token.write.blockIssuance([`0x${"55".repeat(32)}`]);
+    assert.equal(await token.read.issuanceBlockEvidence(), `0x${"55".repeat(32)}`);
+
+    const recoveryEvidence = `0x${"56".repeat(32)}` as `0x${string}`;
+    await viem.assertions.emitWithArgs(
+      token.write.unblockIssuance([recoveryEvidence]),
+      token,
+      "IssuanceUnblockedByEvidence",
+      [admin.account.address, recoveryEvidence],
+    );
+    assert.equal(await token.read.issuanceBlocked(), false);
+    await token.write.mint([recipient.account.address, 1n]);
+  });
+
+  it("mirrors reversible reserve states and restores issuance after recovery", async function () {
+    const token = await viem.deployContract("ResearchUsdEMT", [admin.account.address]);
+    const missing = `0x${"66".repeat(32)}` as `0x${string}`;
+    const recovered = `0x${"77".repeat(32)}` as `0x${string}`;
+
+    await token.write.setReserveState([2, missing]);
+    assert.equal(await token.read.tokenState(), 2);
+    await viem.assertions.revertWithCustomErrorWithArgs(
+      token.write.mint([holder.account.address, 1n]),
+      token,
+      "ReserveCoverageBlocksIssuance",
+      [missing],
+    );
+
+    await token.write.setReserveState([1, recovered]);
+    assert.equal(await token.read.tokenState(), 1);
+    await token.write.mint([holder.account.address, 1n]);
+
+    await token.write.setReserveState([0, recovered]);
+    assert.equal(await token.read.tokenState(), 0);
+  });
+
+  it("does not clear the activity block merely because reserves recover", async function () {
+    const token = await viem.deployContract("ResearchUsdEMT", [admin.account.address]);
+    const thresholdEvidence = `0x${"88".repeat(32)}` as `0x${string}`;
+    await token.write.blockIssuance([thresholdEvidence]);
+    await token.write.setReserveState([2, `0x${"99".repeat(32)}`]);
+    await token.write.setReserveState([0, `0x${"aa".repeat(32)}`]);
+
+    assert.equal(await token.read.tokenState(), 2);
+    await viem.assertions.revertWithCustomErrorWithArgs(
+      token.write.mint([holder.account.address, 1n]),
+      token,
+      "IssuanceBlocked",
+      [thresholdEvidence],
+    );
+  });
 });
