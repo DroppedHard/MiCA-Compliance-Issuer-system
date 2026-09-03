@@ -1,3 +1,4 @@
+pub mod address_restriction_sqlite;
 pub mod asset_state_sqlite;
 pub mod cache;
 pub mod casp_reporting_http;

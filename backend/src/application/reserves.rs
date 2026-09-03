@@ -1,6 +1,6 @@
 use crate::{
     application::{AssetStateService, CacheError, SnapshotCache},
-    domain::{BankReserve, CoverageStatus, ReserveCoverage},
+    domain::{AssetState, BankReserve, CoverageStatus, ReserveCoverage},
 };
 use async_trait::async_trait;
 use std::{
@@ -21,6 +21,10 @@ pub trait ReserveReader: Send + Sync {
 #[async_trait]
 pub trait ReserveInitializer: Send + Sync {
     async fn initialize_reserve(&self, target_balance_minor: u64) -> Result<(), ReserveError>;
+}
+#[async_trait]
+pub trait ReserveStateController: Send + Sync {
+    async fn synchronize_reserve_state(&self, state: &AssetState) -> Result<(), ReserveError>;
 }
 
 /// Returns the USD-cent reserve target for the explicit 110% demo policy.
@@ -63,6 +67,8 @@ pub enum ReserveError {
     Currency(String),
     #[error("invalid monetary value: {0}")]
     InvalidValue(String),
+    #[error("on-chain reserve state update failed: {0}")]
+    Blockchain(String),
 }
 impl From<CacheError> for ReserveError {
     fn from(value: CacheError) -> Self {
@@ -119,6 +125,7 @@ pub struct ReservePollingService {
     token_cache: Arc<dyn SnapshotCache>,
     monitor: ReserveMonitor,
     asset_state: Arc<AssetStateService>,
+    state_controller: Arc<dyn ReserveStateController>,
     poll_interval: Duration,
 }
 impl ReservePollingService {
@@ -127,6 +134,7 @@ impl ReservePollingService {
         token_cache: Arc<dyn SnapshotCache>,
         monitor: ReserveMonitor,
         asset_state: Arc<AssetStateService>,
+        state_controller: Arc<dyn ReserveStateController>,
         poll_interval: Duration,
     ) -> Self {
         Self {
@@ -134,6 +142,7 @@ impl ReservePollingService {
             token_cache,
             monitor,
             asset_state,
+            state_controller,
             poll_interval,
         }
     }
@@ -150,9 +159,13 @@ impl ReservePollingService {
             reserve,
         )?;
         self.monitor.success(coverage.clone()).await;
-        self.asset_state
+        let state = self
+            .asset_state
             .evaluate_coverage(&coverage)
             .map_err(|error| ReserveError::Cache(error.to_string()))?;
+        self.state_controller
+            .synchronize_reserve_state(&state)
+            .await?;
         Ok(coverage)
     }
     pub async fn run(self) {
@@ -163,9 +176,12 @@ impl ReservePollingService {
             match self.poll_once().await {
                 Ok(value) => info!(status=?value.status, "reserve coverage updated"),
                 Err(ReserveError::TokenUnavailable) => {
-                    if let Err(error) = self.asset_state.mark_data_unavailable(
-                        "Token supply is unavailable, so reserve coverage cannot be evaluated",
-                    ) {
+                    if let Err(error) = self
+                        .block_for_unavailable_data(
+                            "Token supply is unavailable, so reserve coverage cannot be evaluated",
+                        )
+                        .await
+                    {
                         error!(error=%error, "asset state update failed");
                     }
                     debug!("reserve polling is waiting for the first token observation");
@@ -173,8 +189,7 @@ impl ReservePollingService {
                 Err(error) => {
                     let message = error.to_string();
                     self.monitor.record_poll_failure(&error).await;
-                    if let Err(state_error) =
-                        self.asset_state.mark_data_unavailable(message.clone())
+                    if let Err(state_error) = self.block_for_unavailable_data(message.clone()).await
                     {
                         error!(error=%state_error, "asset state update failed");
                     }
@@ -182,6 +197,19 @@ impl ReservePollingService {
                 }
             }
         }
+    }
+
+    async fn block_for_unavailable_data(
+        &self,
+        reason: impl Into<String>,
+    ) -> Result<(), ReserveError> {
+        let state = self
+            .asset_state
+            .mark_data_unavailable(reason)
+            .map_err(|error| ReserveError::Cache(error.to_string()))?;
+        self.state_controller
+            .synchronize_reserve_state(&state)
+            .await
     }
 }
 

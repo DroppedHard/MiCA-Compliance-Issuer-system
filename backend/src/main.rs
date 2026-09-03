@@ -3,14 +3,15 @@ use std::sync::Arc;
 use crypto_asset_backend::{
     api,
     application::{
-        AssetStateService, CachedTokenQueryService, CaspReportingService, ChainPollingService,
-        EsgBroadcaster, IssuanceService, ObservationBroadcaster, OperationGate, PollingMonitor,
-        RedemptionService, ReserveAdjustmentService, ReserveInitializer, ReserveMonitor,
-        ReservePollingService, SnapshotCache, TokenReader, WindDownService,
-        initial_reserve_target_minor,
+        AddressRestrictionService, AssetStateService, CachedTokenQueryService,
+        CaspReportingService, ChainPollingService, EsgBroadcaster, IssuanceService,
+        ObservationBroadcaster, OperationGate, PollingMonitor, RedemptionService,
+        ReserveAdjustmentService, ReserveInitializer, ReserveMonitor, ReservePollingService,
+        SnapshotCache, TokenReader, WindDownService, initial_reserve_target_minor,
     },
     config::Config,
     infrastructure::{
+        address_restriction_sqlite::SqliteAddressRestrictionStore,
         asset_state_sqlite::SqliteAssetStateStore,
         cache::InMemorySnapshotCache,
         casp_reporting_http::HttpCaspReportSource,
@@ -35,9 +36,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_tracing();
     let config = Config::from_env()?;
     let token_reader = AlloyTokenReader::connect(&config.rpc_url, config.token_address).await?;
+    let initial_snapshot = token_reader.read_snapshot().await?;
     let bank_operations = Arc::new(HttpBankTransactionReader::new(&config.mock_bank_url));
     if config.initialize_reserve_on_startup {
-        let initial_snapshot = token_reader.read_snapshot().await?;
         let initial_reserve = initial_reserve_target_minor(
             &initial_snapshot.total_supply_raw,
             initial_snapshot.decimals,
@@ -55,8 +56,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let monitor = Arc::new(PollingMonitor::new(config.polling_max_staleness));
     let observations = ObservationBroadcaster::new(32);
     let esg_observations = EsgBroadcaster::new(32);
-    let esg_store: Arc<dyn crypto_asset_backend::application::EsgStore> =
-        Arc::new(SqliteEsgStore::open(&config.database_path)?);
+    let sqlite_esg_store = Arc::new(SqliteEsgStore::open(&config.database_path)?);
+    if config.seed_esg_demo_on_startup {
+        let inserted = sqlite_esg_store.seed_demo_week(
+            initial_snapshot.chain_id,
+            &initial_snapshot.contract_address,
+            time::OffsetDateTime::now_utc().date(),
+        )?;
+        info!(
+            inserted_days = inserted,
+            "issuer ensured recent ESG demonstration history"
+        );
+    }
+    let esg_store: Arc<dyn crypto_asset_backend::application::EsgStore> = sqlite_esg_store;
     let poller = ChainPollingService::new(
         Arc::new(token_reader),
         Arc::clone(&cache),
@@ -72,15 +84,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::new(SqliteAssetStateStore::open(&config.database_path)?),
         32,
     ));
-    let reserve_poller = ReservePollingService::new(
-        Arc::new(HttpReserveReader::new(&config.mock_bank_url)),
-        Arc::clone(&cache),
-        reserve_monitor.clone(),
-        asset_state_service.clone(),
-        config.poll_interval,
-    );
-    tokio::spawn(reserve_poller.run());
-    let token_service = Arc::new(CachedTokenQueryService::new(cache, monitor));
     let token_operator = Arc::new(
         AlloyTokenIssuer::connect(
             &config.rpc_url,
@@ -89,6 +92,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await?,
     );
+    let reserve_poller = ReservePollingService::new(
+        Arc::new(HttpReserveReader::new(&config.mock_bank_url)),
+        Arc::clone(&cache),
+        reserve_monitor.clone(),
+        asset_state_service.clone(),
+        token_operator.clone(),
+        config.poll_interval,
+    );
+    tokio::spawn(reserve_poller.run());
+    let token_service = Arc::new(CachedTokenQueryService::new(cache, monitor));
     let casp_report_store = Arc::new(SqliteCaspReportStore::open(&config.database_path)?);
     let operation_gate = Arc::new(OperationGate::with_issuance_restriction(
         Arc::new(SqliteOperationDecisionStore::open(&config.database_path)?),
@@ -110,14 +123,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
     let wind_down_service = Arc::new(WindDownService::new(
         asset_state_service.clone(),
-        token_operator,
+        token_operator.clone(),
         Arc::new(SqliteWindDownAuditStore::open(&config.database_path)?),
     ));
     let reserve_adjustment_service = Arc::new(ReserveAdjustmentService::new(bank_operations));
-    let casp_reporting_service = Arc::new(CaspReportingService::new(
-        Arc::new(HttpCaspReportSource::new(&config.casp_url)),
-        casp_report_store,
+    let address_restriction_service = Arc::new(AddressRestrictionService::new(
+        Arc::new(SqliteAddressRestrictionStore::open(&config.database_path)?),
+        token_operator.clone(),
     ));
+    let casp_reporting_service = Arc::new(
+        CaspReportingService::new(
+            Arc::new(HttpCaspReportSource::new(&config.casp_url)),
+            casp_report_store,
+        )
+        .with_issuance_controller(token_operator),
+    );
     let app = api::router(api::RouterDependencies {
         token_service,
         observations,
@@ -130,6 +150,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         redemption_service,
         wind_down_service,
         casp_reporting_service,
+        address_restriction_service,
     });
     let listener = TcpListener::bind(config.http_address).await?;
     info!(address = %config.http_address, "HTTP server started");

@@ -1,8 +1,9 @@
 use crate::{
     application::{
-        AdjustReserve, AssetStateService, CachedTokenQueryService, CaspReportingError,
-        CaspReportingService, CreateIssuance, EsgBroadcaster, EsgStore, IssuanceError,
-        IssuanceService, ObservationBroadcaster, QueryError, RedemptionError, RedemptionService,
+        AddressRestriction, AddressRestrictionError, AddressRestrictionService, AdjustReserve,
+        AssetStateService, CachedTokenQueryService, CaspReportingError, CaspReportingService,
+        CreateIssuance, EsgBroadcaster, EsgStore, IssuanceError, IssuanceService,
+        ObservationBroadcaster, QueryError, RedemptionError, RedemptionService,
         ReserveAdjustmentDirection, ReserveAdjustmentError, ReserveAdjustmentService,
         ReserveMonitor, WindDownError, WindDownService,
     },
@@ -39,6 +40,7 @@ struct AppState {
     redemption_service: Arc<RedemptionService>,
     wind_down_service: Arc<WindDownService>,
     casp_reporting_service: Arc<CaspReportingService>,
+    address_restriction_service: Arc<AddressRestrictionService>,
 }
 
 pub struct RouterDependencies {
@@ -53,6 +55,7 @@ pub struct RouterDependencies {
     pub redemption_service: Arc<RedemptionService>,
     pub wind_down_service: Arc<WindDownService>,
     pub casp_reporting_service: Arc<CaspReportingService>,
+    pub address_restriction_service: Arc<AddressRestrictionService>,
 }
 
 pub fn router(dependencies: RouterDependencies) -> Router {
@@ -70,6 +73,14 @@ pub fn router(dependencies: RouterDependencies) -> Router {
         .route("/api/v1/asset-state/stream", get(asset_state_stream))
         .route("/api/v1/admin/asset-state/wind-down", post(enter_wind_down))
         .route(
+            "/api/v1/admin/address-blacklist",
+            get(list_address_restrictions).post(block_address),
+        )
+        .route(
+            "/api/v1/admin/address-blacklist/{address}",
+            axum::routing::delete(unblock_address),
+        )
+        .route(
             "/api/v1/admin/casp-reports/ingest",
             post(ingest_casp_reports),
         )
@@ -77,6 +88,10 @@ pub fn router(dependencies: RouterDependencies) -> Router {
         .route(
             "/api/v1/admin/casp-reports/quarterly",
             get(casp_quarterly_report),
+        )
+        .route(
+            "/api/v1/admin/demo/casp-threshold-breach",
+            post(run_demo_casp_threshold_breach),
         )
         .route("/api/v1/issuance-orders", post(create_issuance))
         .route("/api/v1/issuance-orders/{operation_id}", get(get_issuance))
@@ -105,7 +120,49 @@ pub fn router(dependencies: RouterDependencies) -> Router {
             redemption_service: dependencies.redemption_service,
             wind_down_service: dependencies.wind_down_service,
             casp_reporting_service: dependencies.casp_reporting_service,
+            address_restriction_service: dependencies.address_restriction_service,
         })
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AddressRestrictionRequest {
+    address: String,
+    reason: String,
+}
+
+async fn list_address_restrictions(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<AddressRestriction>>, ApiError> {
+    state
+        .address_restriction_service
+        .list()
+        .map(Json)
+        .map_err(ApiError::from)
+}
+
+async fn block_address(
+    State(state): State<AppState>,
+    Json(request): Json<AddressRestrictionRequest>,
+) -> Result<Json<AddressRestriction>, ApiError> {
+    state
+        .address_restriction_service
+        .block(&request.address, &request.reason)
+        .await
+        .map(Json)
+        .map_err(ApiError::from)
+}
+
+async fn unblock_address(
+    State(state): State<AppState>,
+    Path(address): Path<String>,
+) -> Result<Json<AddressRestriction>, ApiError> {
+    state
+        .address_restriction_service
+        .unblock(&address)
+        .await
+        .map(Json)
+        .map_err(ApiError::from)
 }
 
 #[derive(Deserialize)]
@@ -182,6 +239,17 @@ async fn casp_quarterly_report(
     state
         .casp_reporting_service
         .quarterly(query.year, query.quarter)
+        .map(Json)
+        .map_err(ApiError::from)
+}
+async fn run_demo_casp_threshold_breach(
+    State(state): State<AppState>,
+    Query(query): Query<QuarterQuery>,
+) -> Result<Json<QuarterlyTransactionAssessment>, ApiError> {
+    state
+        .casp_reporting_service
+        .run_demo_threshold_breach(query.year, query.quarter)
+        .await
         .map(Json)
         .map_err(ApiError::from)
 }
@@ -431,24 +499,52 @@ enum ApiError {
     BadRequest(String),
     NotFound(String),
     Conflict(String),
+    IssuanceBlocked(String),
     Unavailable(String),
     Internal(String),
 }
 #[derive(Serialize)]
 struct ErrorBody {
     error: String,
+    code: &'static str,
+    #[serde(rename = "userMessage", skip_serializing_if = "Option::is_none")]
+    user_message: Option<&'static str>,
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let (status, message) = match self {
-            Self::BadRequest(message) => (StatusCode::BAD_REQUEST, message),
-            Self::NotFound(message) => (StatusCode::NOT_FOUND, message),
-            Self::Conflict(message) => (StatusCode::CONFLICT, message),
-            Self::Unavailable(message) => (StatusCode::SERVICE_UNAVAILABLE, message),
-            Self::Internal(message) => (StatusCode::INTERNAL_SERVER_ERROR, message),
+        let (status, message, code, user_message) = match self {
+            Self::BadRequest(message) => (StatusCode::BAD_REQUEST, message, "bad_request", None),
+            Self::NotFound(message) => (StatusCode::NOT_FOUND, message, "not_found", None),
+            Self::Conflict(message) => (StatusCode::CONFLICT, message, "conflict", None),
+            Self::IssuanceBlocked(message) => (
+                StatusCode::CONFLICT,
+                message,
+                "issuance_blocked",
+                Some("Emisja rUSD jest obecnie zablokowana przez emitenta."),
+            ),
+            Self::Unavailable(message) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                message,
+                "service_unavailable",
+                None,
+            ),
+            Self::Internal(message) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                message,
+                "internal_error",
+                None,
+            ),
         };
-        (status, Json(ErrorBody { error: message })).into_response()
+        (
+            status,
+            Json(ErrorBody {
+                error: message,
+                code,
+                user_message,
+            }),
+        )
+            .into_response()
     }
 }
 
@@ -457,11 +553,11 @@ impl From<IssuanceError> for ApiError {
         match error {
             IssuanceError::Invalid(_) => Self::BadRequest(error.to_string()),
             IssuanceError::NotFound => Self::NotFound(error.to_string()),
+            IssuanceError::IssuanceBlocked(_) => Self::IssuanceBlocked(error.to_string()),
             IssuanceError::IdempotencyConflict
             | IssuanceError::FiatNotConfirmed
             | IssuanceError::BankMismatch
-            | IssuanceError::SettlementInProgress
-            | IssuanceError::IssuanceBlocked(_) => Self::Conflict(error.to_string()),
+            | IssuanceError::SettlementInProgress => Self::Conflict(error.to_string()),
             IssuanceError::Bank(_) => Self::Unavailable(error.to_string()),
             IssuanceError::Storage(_) | IssuanceError::Blockchain(_) => {
                 Self::Internal(error.to_string())
@@ -521,9 +617,18 @@ impl From<CaspReportingError> for ApiError {
                 Self::BadRequest(error.to_string())
             }
             CaspReportingError::Source(_) => Self::Unavailable(error.to_string()),
-            CaspReportingError::Storage(_) | CaspReportingError::Overflow => {
-                Self::Internal(error.to_string())
-            }
+            CaspReportingError::Storage(_)
+            | CaspReportingError::Overflow
+            | CaspReportingError::Enforcement(_) => Self::Internal(error.to_string()),
+        }
+    }
+}
+impl From<AddressRestrictionError> for ApiError {
+    fn from(error: AddressRestrictionError) -> Self {
+        match error {
+            AddressRestrictionError::Invalid(_) => Self::BadRequest(error.to_string()),
+            AddressRestrictionError::Blockchain(_) => Self::Unavailable(error.to_string()),
+            AddressRestrictionError::Storage(_) => Self::Internal(error.to_string()),
         }
     }
 }
@@ -533,9 +638,9 @@ mod tests {
     use super::*;
     use crate::{
         application::{
-            BankTransactionReader, ConfirmedBankTransaction, IssuanceStore, MintResult,
-            OperationGate, PayoutBank, PollingMonitor, RedemptionToken, ReserveAdjustmentGateway,
-            SnapshotCache, TokenIssuer, TokenLifecycle,
+            AddressRestrictionChain, BankTransactionReader, ConfirmedBankTransaction,
+            IssuanceStore, MintResult, OperationGate, PayoutBank, PollingMonitor, RedemptionToken,
+            ReserveAdjustmentGateway, SnapshotCache, TokenIssuer, TokenLifecycle,
         },
         config::esg,
         domain::{EsgObservation, IssuanceOrder},
@@ -621,6 +726,10 @@ mod tests {
         async fn find(&self, _: &str) -> Result<Option<ConfirmedBankTransaction>, IssuanceError> {
             Ok(None)
         }
+
+        async fn refund_to_casp(&self, _: &str, _: u64) -> Result<(), IssuanceError> {
+            Ok(())
+        }
     }
     struct TestToken;
     #[async_trait]
@@ -649,6 +758,16 @@ mod tests {
     impl TokenLifecycle for TestToken {
         async fn enter_wind_down(&self) -> Result<Option<String>, WindDownError> {
             Ok(Some("0xwinddown".into()))
+        }
+    }
+    #[async_trait]
+    impl AddressRestrictionChain for TestToken {
+        async fn set_frozen(
+            &self,
+            _: Address,
+            _: bool,
+        ) -> Result<Option<String>, AddressRestrictionError> {
+            Ok(Some("0xrestriction".into()))
         }
     }
     #[async_trait]
@@ -756,6 +875,12 @@ mod tests {
                     .unwrap(),
                 ),
             )),
+            address_restriction_service: Arc::new(AddressRestrictionService::new(
+                Arc::new(
+                    crate::infrastructure::address_restriction_sqlite::SqliteAddressRestrictionStore::open(":memory:").unwrap(),
+                ),
+                Arc::new(TestToken),
+            )),
         })
     }
 
@@ -812,6 +937,26 @@ mod tests {
             .unwrap();
         let value: AssetState = serde_json::from_slice(&body).unwrap();
         assert_eq!(value.state, crate::domain::AssetStateCode::WindDown);
+    }
+
+    #[tokio::test]
+    async fn demo_threshold_endpoint_creates_enforceable_full_quarter_evidence() {
+        let response = test_router(EsgBroadcaster::new(4))
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/admin/demo/casp-threshold-breach?year=2026&quarter=2")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["calendarDayCount"], 91);
+        assert_eq!(json["averageDailyOperationCount"], 1_000_001.0);
+        assert_eq!(json["thresholdEnforceable"], true);
     }
 
     #[tokio::test]
@@ -916,5 +1061,22 @@ mod tests {
         assert_eq!(json["status"], "awaiting_fiat");
         assert_eq!(json["tokenAmountRaw"], "12500000");
         assert_eq!(json["bankIdempotencyKey"], "issuance-purchase-1");
+    }
+
+    #[tokio::test]
+    async fn blocked_issuance_has_a_stable_code_and_polish_user_message() {
+        let response = ApiError::from(IssuanceError::IssuanceBlocked(
+            "reserve coverage is below 100%".into(),
+        ))
+        .into_response();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let json: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 64 * 1024).await.unwrap())
+                .unwrap();
+        assert_eq!(json["code"], "issuance_blocked");
+        assert_eq!(
+            json["userMessage"],
+            "Emisja rUSD jest obecnie zablokowana przez emitenta."
+        );
     }
 }

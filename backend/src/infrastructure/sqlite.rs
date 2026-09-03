@@ -10,6 +10,7 @@ use std::{
     sync::Mutex,
     time::{SystemTime, UNIX_EPOCH},
 };
+use time::{Date, Duration};
 
 pub struct SqliteEsgStore {
     connection: Mutex<Connection>,
@@ -59,6 +60,24 @@ impl SqliteEsgStore {
         tx.execute("INSERT OR IGNORE INTO token_daily_activity(date_utc,chain_id,contract_address,transaction_count,first_block,last_block,finalized_at_unix_ms) VALUES (?1,?2,?3,?4,0,0,?5)", params![date,chain_id as i64,contract,count as i64,now]).map_err(storage)?;
         let inserted = tx.execute("INSERT OR IGNORE INTO esg_daily_estimates(date_utc,chain_id,contract_address,transaction_count,energy_milliwh,energy_lower_milliwh,energy_upper_milliwh,emissions_milligram_co2e,renewable_energy_milliwh,nuclear_energy_milliwh,fossil_energy_milliwh,methodology_version,calculated_at_unix_ms,data_origin) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,'demo_seed')", params![date,chain_id as i64,contract,count as i64,(estimate.energy_best_guess_wh*1000.0) as i64,(estimate.energy_lower_wh*1000.0) as i64,(estimate.energy_upper_wh*1000.0) as i64,(estimate.emissions_g_co2e*1000.0) as i64,(estimate.renewable_energy_wh*1000.0) as i64,(estimate.nuclear_energy_wh*1000.0) as i64,(estimate.fossil_energy_wh*1000.0) as i64,esg::METHODOLOGY_VERSION,now]).map_err(storage)? > 0;
         tx.commit().map_err(storage)?;
+        Ok(inserted)
+    }
+
+    /// Seeds the seven completed UTC days preceding `today` with deliberately
+    /// small demo activity. At the configured Cambridge best-guess allocation,
+    /// 6-9 transactions produce roughly 118-177 Wh per day.
+    pub fn seed_demo_week(
+        &self,
+        chain_id: u64,
+        contract: &str,
+        today: Date,
+    ) -> Result<usize, EsgStoreError> {
+        let transaction_counts = [6_u64, 8, 7, 9, 6, 8, 7];
+        let mut inserted = 0;
+        for (offset, count) in (1_i64..=7).rev().zip(transaction_counts) {
+            let date = (today - Duration::days(offset)).to_string();
+            inserted += usize::from(self.seed_demo_day(chain_id, contract, &date, count)?);
+        }
         Ok(inserted)
     }
 }
@@ -331,6 +350,22 @@ mod tests {
         let day = &store.recent_estimates(1, "0xabc", 7).unwrap()[0];
         assert_eq!(day.transaction_count, 7);
         assert_eq!(day.data_origin, "observed");
+    }
+
+    #[test]
+    fn demo_week_is_relative_idempotent_and_stays_near_live_demo_scale() {
+        let store = store();
+        let today = Date::from_calendar_date(2026, time::Month::August, 30).unwrap();
+        assert_eq!(store.seed_demo_week(1, "0xabc", today).unwrap(), 7);
+        assert_eq!(store.seed_demo_week(1, "0xabc", today).unwrap(), 0);
+        let history = store.recent_estimates(1, "0xabc", 7).unwrap();
+        assert_eq!(history.first().unwrap().date_utc, "2026-08-23");
+        assert_eq!(history.last().unwrap().date_utc, "2026-08-29");
+        assert!(history.iter().all(|day| {
+            (100.0..=200.0).contains(&day.energy_best_guess_wh)
+                && day.data_origin == "demoSeed"
+                && day.status == "finalized"
+        }));
     }
 
     #[test]

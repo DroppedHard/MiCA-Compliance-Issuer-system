@@ -79,12 +79,19 @@ The service observes ERC-20 `Transfer` logs on every polling cycle and groups th
 
 The hard-coded demonstration methodology lives in `src/config/esg.rs`, including its Cambridge source. It propagates Cambridge's 1.26 / 7.87 / 11.49 GWh annual scenarios into lower, best-guess and upper per-transaction allocations. `/api/v1/esg`, `/api/v1/esg/daily` and `/api/v1/esg/stream` expose estimates, not direct energy measurements or statistical confidence intervals. The current UTC day is provisional; older activity is finalized when the observer reaches a later day.
 
-Seed the optional 17–21 August 2026 demonstration history after setting the same token address used by the backend:
+Seed the optional rolling seven-day demonstration history after setting the same token address used by the backend:
 
 ```powershell
 $env:TOKEN_ADDRESS="0x5FbDB2315678afecb367f032d93F642f64180aa3"
 cargo run --bin seed-esg-demo
 ```
+
+The Compose deployment sets `SEED_ESG_DEMO_ON_STARTUP=true`. On every startup
+the issuer idempotently ensures seven finalized demo estimates for the completed
+UTC days preceding startup. The fixture uses 6-9 transactions per day, producing
+approximately 118-177 Wh/day under the configured Cambridge best-guess model.
+Observed rows are never overwritten. Local non-Compose startup leaves this
+fixture disabled unless the flag is explicitly enabled.
 
 The command is idempotent and never replaces an existing day. Seeded rows carry the `demoSeed` origin in the API.
 
@@ -177,7 +184,18 @@ Invoke-RestMethod "http://127.0.0.1:3000/api/v1/admin/casp-reports/quarterly?yea
 
 Imported daily projections are persisted in the issuer database together with the imported range and source methodology. Quarterly averages use every calendar day in the quarter, including zero-activity days, but `thresholdEnforceable` can become true only after a full-quarter range was imported. Consistently with Article 23, the assessment requires both the average daily number to exceed 1 million and the average daily value to exceed EUR 200 million. The value calculation deliberately uses the documented demo conversion `1 USD = 1 EUR`. Known on-chain overlap is carried as evidence and is not added to the off-chain `goods_or_services` subset.
 
-An enforceable threshold breach permanently activates the persisted activity issuance gate in this demo. `OperationGate` evaluates that restriction alongside the independently persisted reserve state, so a later healthy reserve poll cannot silently clear the Article 23 block. Redemption remains available. There is intentionally no automatic unblock; reopening issuance would require a future explicit authority-controlled workflow with new evidence.
+Every complete quarterly assessment synchronizes the persisted activity issuance gate. A threshold breach blocks issuance; a later complete assessment that does not exceed both thresholds clears that activity restriction. `OperationGate` evaluates it alongside reserve health, so clearing one axis cannot override a block on the other. Redemption remains available, and `wind_down` remains terminal.
+
+The backend calls `blockIssuance(evidenceHash)` or `unblockIssuance(evidenceHash)` to mirror the latest complete assessment. The hash correlates the on-chain decision with the quarterly assessment stored in issuer SQLite. This is deliberately narrower than `pause()`: only minting is affected, while transfers and redemption burns remain possible.
+
+For a deterministic local verification without writing one million source records, use the demo endpoint through the supplied Hardhat script:
+
+```powershell
+cd issuer\asset
+npm.cmd run compliance-threshold
+```
+
+Internally, `POST /api/v1/admin/demo/casp-threshold-breach?year=2026&quarter=2` inserts one compact synthetic quarter-total aggregate. Dividing that total by all 91 calendar days produces averages of `1,000,001` qualifying operations and `EUR 200,000,000.01` per day. The endpoint and script are research-only test surfaces and must not be treated as CASP evidence ingestion. Reset the disposable Compose deployment before rerunning because the contract has no issuance-unblock function.
 
 ## Local setup tutorial
 

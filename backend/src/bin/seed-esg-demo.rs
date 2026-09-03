@@ -12,23 +12,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|value| value.parse().ok())
         .unwrap_or(31_337);
     let store = SqliteEsgStore::open(&database)?;
-    let days = [
-        ("2026-08-17", 120),
-        ("2026-08-18", 185),
-        ("2026-08-19", 150),
-        ("2026-08-20", 240),
-        ("2026-08-21", 210),
-    ];
-    for (date, count) in days {
-        let inserted = store.seed_demo_day(chain_id, &contract, date, count)?;
-        println!(
-            "{date}: {} ({count} transactions)",
-            if inserted {
-                "inserted"
-            } else {
-                "already present"
-            }
-        );
-    }
+    let inserted =
+        store.seed_demo_week(chain_id, &contract, time::OffsetDateTime::now_utc().date())?;
+    println!("ESG demo week ready; inserted {inserted} missing days");
     Ok(())
 }

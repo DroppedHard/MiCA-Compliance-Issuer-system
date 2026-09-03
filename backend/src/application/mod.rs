@@ -9,13 +9,18 @@ mod reserve_adjustment;
 mod reserves;
 mod token_query;
 mod wind_down;
+pub use address_restrictions::{
+    AddressRestriction, AddressRestrictionChain, AddressRestrictionError,
+    AddressRestrictionService, AddressRestrictionStore,
+};
 pub use asset_state::{
     ASSET_STATE_POLICY_VERSION, AssetStateError, AssetStateService, AssetStateStore,
     evaluate as evaluate_asset_state,
 };
 pub use casp_reporting::{
-    CaspReportSource, CaspReportStore, CaspReportingError, CaspReportingService,
-    DAILY_TRANSACTION_THRESHOLD, DAILY_VALUE_THRESHOLD_EUR_MINOR, QUARTERLY_METHODOLOGY_VERSION,
+    ActivityIssuanceController, CaspReportSource, CaspReportStore, CaspReportingError,
+    CaspReportingService, DAILY_TRANSACTION_THRESHOLD, DAILY_VALUE_THRESHOLD_EUR_MINOR,
+    QUARTERLY_METHODOLOGY_VERSION,
 };
 pub use issuance::{
     BankTransactionReader, ConfirmedBankTransaction, CreateIssuance, IssuanceError,
@@ -39,9 +44,10 @@ pub use reserve_adjustment::{
 };
 pub use reserves::{
     ReserveError, ReserveInitializer, ReserveMonitor, ReservePollingService, ReserveReader,
-    calculate_coverage, initial_reserve_target_minor,
+    ReserveStateController, calculate_coverage, initial_reserve_target_minor,
 };
 pub use token_query::{CachedTokenQueryService, QueryError};
 pub use wind_down::{
     TokenLifecycle, WindDownAudit, WindDownAuditStore, WindDownError, WindDownService,
 };
+mod address_restrictions;

@@ -46,7 +46,17 @@ pub trait BankTransactionReader: Send + Sync {
         &self,
         idempotency_key: &str,
     ) -> Result<Option<ConfirmedBankTransaction>, IssuanceError>;
+
+    /// Compensates a confirmed CASP payment when issuance cannot proceed.
+    /// The implementation must be idempotent for one operation ID.
+    async fn refund_to_casp(
+        &self,
+        operation_id: &str,
+        amount_minor: u64,
+    ) -> Result<(), IssuanceError>;
 }
+
+const REFUNDED_MARKER: &str = "fiat_refunded_to_casp:";
 
 #[async_trait]
 pub trait TokenIssuer: Send + Sync {
@@ -136,6 +146,15 @@ impl IssuanceService {
         if order.status == IssuanceStatus::Completed {
             return Ok(order);
         }
+        if order
+            .last_error
+            .as_deref()
+            .is_some_and(|message| message.starts_with(REFUNDED_MARKER))
+        {
+            return Err(IssuanceError::IssuanceBlocked(
+                "wpłata fiat została już zwrócona CASP; wymagane jest nowe zlecenie".to_owned(),
+            ));
+        }
         let bank = self
             .bank
             .find(&order.bank_idempotency_key)
@@ -155,7 +174,19 @@ impl IssuanceService {
             .decide(operation_id, IssuerOperationKind::Issuance, &state)
             .map_err(|error| IssuanceError::Storage(error.to_string()))?;
         if decision.outcome == OperationDecisionOutcome::Rejected {
-            return Err(IssuanceError::IssuanceBlocked(decision.reason));
+            let amount = order
+                .amount_usd_minor
+                .parse::<u64>()
+                .map_err(|_| IssuanceError::Storage("stored fiat amount is invalid".to_owned()))?;
+            self.bank.refund_to_casp(operation_id, amount).await?;
+            self.store.fail(
+                operation_id,
+                &format!("{REFUNDED_MARKER} {}", decision.reason),
+            )?;
+            return Err(IssuanceError::IssuanceBlocked(format!(
+                "{}; wpłata fiat została zwrócona CASP",
+                decision.reason
+            )));
         }
         let claimed = self.store.claim_for_mint(operation_id)?;
         let recipient = claimed.recipient_address.parse::<Address>().map_err(|_| {
@@ -250,15 +281,42 @@ mod tests {
             order.transaction_hash = hash.map(str::to_owned);
             Ok(order.clone())
         }
-        fn fail(&self, _: &str, _: &str) -> Result<(), IssuanceError> {
+        fn fail(&self, _: &str, message: &str) -> Result<(), IssuanceError> {
+            let mut value = self.0.lock().unwrap();
+            let order = value.as_mut().unwrap();
+            order.status = IssuanceStatus::Failed;
+            order.last_error = Some(message.to_owned());
             Ok(())
         }
     }
-    struct Bank(Option<ConfirmedBankTransaction>);
+    struct Bank {
+        transaction: Option<ConfirmedBankTransaction>,
+        refunds: Mutex<Vec<(String, u64)>>,
+    }
+    impl Bank {
+        fn new(transaction: Option<ConfirmedBankTransaction>) -> Self {
+            Self {
+                transaction,
+                refunds: Mutex::new(Vec::new()),
+            }
+        }
+    }
     #[async_trait]
     impl BankTransactionReader for Bank {
         async fn find(&self, _: &str) -> Result<Option<ConfirmedBankTransaction>, IssuanceError> {
-            Ok(self.0.clone())
+            Ok(self.transaction.clone())
+        }
+        async fn refund_to_casp(
+            &self,
+            operation_id: &str,
+            amount_minor: u64,
+        ) -> Result<(), IssuanceError> {
+            let mut refunds = self.refunds.lock().unwrap();
+            let refund = (operation_id.to_owned(), amount_minor);
+            if !refunds.contains(&refund) {
+                refunds.push(refund);
+            }
+            Ok(())
         }
     }
     struct Token(Mutex<u8>);
@@ -333,7 +391,7 @@ mod tests {
         let store = Arc::new(MemoryStore(Mutex::new(None)));
         let service = IssuanceService::new(
             store,
-            Arc::new(Bank(None)),
+            Arc::new(Bank::new(None)),
             Arc::new(Token(Mutex::new(0))),
             asset_state(Some(110.0)),
             operation_gate(),
@@ -351,7 +409,7 @@ mod tests {
         let token = Arc::new(Token(Mutex::new(0)));
         let service = IssuanceService::new(
             store,
-            Arc::new(Bank(Some(ConfirmedBankTransaction {
+            Arc::new(Bank::new(Some(ConfirmedBankTransaction {
                 operation_type: "deposit".to_owned(),
                 amount_minor: "2500".to_owned(),
                 reference: "order-1".to_owned(),
@@ -382,7 +440,7 @@ mod tests {
         let token = Arc::new(Token(Mutex::new(0)));
         let service = IssuanceService::new(
             store,
-            Arc::new(Bank(None)),
+            Arc::new(Bank::new(None)),
             token.clone(),
             asset_state(Some(110.0)),
             operation_gate(),
@@ -401,7 +459,7 @@ mod tests {
         let token = Arc::new(Token(Mutex::new(0)));
         let service = IssuanceService::new(
             store,
-            Arc::new(Bank(Some(ConfirmedBankTransaction {
+            Arc::new(Bank::new(Some(ConfirmedBankTransaction {
                 operation_type: "deposit".into(),
                 amount_minor: "2499".into(),
                 reference: "order-1".into(),
@@ -422,13 +480,14 @@ mod tests {
     async fn blocked_state_prevents_claim_and_mint_after_confirmed_fiat() {
         let store = Arc::new(MemoryStore(Mutex::new(None)));
         let token = Arc::new(Token(Mutex::new(0)));
+        let bank = Arc::new(Bank::new(Some(ConfirmedBankTransaction {
+            operation_type: "deposit".into(),
+            amount_minor: "2500".into(),
+            reference: "order-1".into(),
+        })));
         let service = IssuanceService::new(
             store,
-            Arc::new(Bank(Some(ConfirmedBankTransaction {
-                operation_type: "deposit".into(),
-                amount_minor: "2500".into(),
-                reference: "order-1".into(),
-            }))),
+            bank.clone(),
             token.clone(),
             asset_state(Some(99.0)),
             operation_gate(),
@@ -440,8 +499,17 @@ mod tests {
         ));
         assert_eq!(
             service.get("order-1").unwrap().status,
-            IssuanceStatus::AwaitingFiat
+            IssuanceStatus::Failed
         );
         assert_eq!(*token.0.lock().unwrap(), 0);
+        assert_eq!(
+            *bank.refunds.lock().unwrap(),
+            vec![("order-1".to_owned(), 2500)]
+        );
+        assert!(matches!(
+            service.settle("order-1").await,
+            Err(IssuanceError::IssuanceBlocked(_))
+        ));
+        assert_eq!(bank.refunds.lock().unwrap().len(), 1);
     }
 }

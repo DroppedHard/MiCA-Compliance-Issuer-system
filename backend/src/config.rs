@@ -24,6 +24,7 @@ pub struct Config {
     pub casp_url: String,
     pub issuer_private_key: String,
     pub initialize_reserve_on_startup: bool,
+    pub seed_esg_demo_on_startup: bool,
 }
 
 #[derive(Debug, Error)]
@@ -40,6 +41,8 @@ pub enum ConfigError {
     MissingIssuerPrivateKey,
     #[error("INITIALIZE_RESERVE_ON_STARTUP must be true or false, got: {0}")]
     InvalidReserveInitializationFlag(String),
+    #[error("SEED_ESG_DEMO_ON_STARTUP must be true or false, got: {0}")]
+    InvalidEsgSeedFlag(String),
 }
 
 impl Config {
@@ -78,6 +81,7 @@ impl Config {
             issuer_private_key: env::var("ISSUER_PRIVATE_KEY")
                 .map_err(|_| ConfigError::MissingIssuerPrivateKey)?,
             initialize_reserve_on_startup: boolean("INITIALIZE_RESERVE_ON_STARTUP", true)?,
+            seed_esg_demo_on_startup: boolean("SEED_ESG_DEMO_ON_STARTUP", false)?,
         })
     }
 }
@@ -86,6 +90,9 @@ fn boolean(name: &'static str, default: bool) -> Result<bool, ConfigError> {
     match raw.to_ascii_lowercase().as_str() {
         "true" | "1" | "yes" => Ok(true),
         "false" | "0" | "no" => Ok(false),
-        _ => Err(ConfigError::InvalidReserveInitializationFlag(raw)),
+        _ if name == "INITIALIZE_RESERVE_ON_STARTUP" => {
+            Err(ConfigError::InvalidReserveInitializationFlag(raw))
+        }
+        _ => Err(ConfigError::InvalidEsgSeedFlag(raw)),
     }
 }

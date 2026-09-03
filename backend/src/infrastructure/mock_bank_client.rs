@@ -144,4 +144,27 @@ impl BankTransactionReader for HttpBankTransactionReader {
             reference: value.reference,
         }))
     }
+
+    async fn refund_to_casp(
+        &self,
+        operation_id: &str,
+        amount_minor: u64,
+    ) -> Result<(), IssuanceError> {
+        self.client
+            .post(format!(
+                "{}/api/v1/reserve-accounts/reserve-rusd/withdrawals",
+                self.base_url
+            ))
+            .json(&serde_json::json!({
+                "amountMinor": amount_minor.to_string(),
+                "reference": format!("refund-to-casp:{operation_id}"),
+                "idempotencyKey": format!("issuance-refund-{operation_id}")
+            }))
+            .send()
+            .await
+            .map_err(|error| IssuanceError::Bank(error.to_string()))?
+            .error_for_status()
+            .map_err(|error| IssuanceError::Bank(error.to_string()))?;
+        Ok(())
+    }
 }

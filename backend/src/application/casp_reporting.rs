@@ -18,14 +18,33 @@ pub trait CaspReportStore: Send + Sync {
         assessment: &QuarterlyTransactionAssessment,
     ) -> Result<(), CaspReportingError>;
 }
+#[async_trait]
+pub trait ActivityIssuanceController: Send + Sync {
+    async fn synchronize_issuance_restriction(
+        &self,
+        assessment: &QuarterlyTransactionAssessment,
+    ) -> Result<(), CaspReportingError>;
+}
 #[derive(Clone)]
 pub struct CaspReportingService {
     source: Arc<dyn CaspReportSource>,
     store: Arc<dyn CaspReportStore>,
+    issuance_controller: Option<Arc<dyn ActivityIssuanceController>>,
 }
 impl CaspReportingService {
     pub fn new(source: Arc<dyn CaspReportSource>, store: Arc<dyn CaspReportStore>) -> Self {
-        Self { source, store }
+        Self {
+            source,
+            store,
+            issuance_controller: None,
+        }
+    }
+    pub fn with_issuance_controller(
+        mut self,
+        controller: Arc<dyn ActivityIssuanceController>,
+    ) -> Self {
+        self.issuance_controller = Some(controller);
+        self
     }
     pub async fn ingest(
         &self,
@@ -39,6 +58,14 @@ impl CaspReportingService {
                 "CASP returned a different date range".into(),
             ));
         }
+        self.import_report(from, to, report).await
+    }
+    async fn import_report(
+        &self,
+        from: &str,
+        to: &str,
+        report: CaspDailyReport,
+    ) -> Result<CaspDailyReport, CaspReportingError> {
         for day in &report.days {
             if day.asset_symbol != "rUSD"
                 || day.currency_area != "USD"
@@ -55,8 +82,61 @@ impl CaspReportingService {
         if let Some((year, quarter)) = exact_quarter(from, to) {
             let assessment = self.quarterly(year, quarter)?;
             self.store.save_assessment(&assessment)?;
+            if let Some(controller) = &self.issuance_controller {
+                controller
+                    .synchronize_issuance_restriction(&assessment)
+                    .await?;
+            }
         }
         Ok(report)
+    }
+    pub async fn run_demo_threshold_breach(
+        &self,
+        year: i32,
+        quarter: u8,
+    ) -> Result<QuarterlyTransactionAssessment, CaspReportingError> {
+        let (from, to, calendar_days) = quarter_range(year, quarter)?;
+        let daily_count = DAILY_TRANSACTION_THRESHOLD + 1;
+        let daily_value_minor = DAILY_VALUE_THRESHOLD_EUR_MINOR + 1;
+        let count = daily_count
+            .checked_mul(calendar_days)
+            .ok_or(CaspReportingError::Overflow)?;
+        let value_minor = daily_value_minor
+            .checked_mul(calendar_days)
+            .ok_or(CaspReportingError::Overflow)?;
+        let value_raw = value_minor
+            .checked_mul(10_000)
+            .ok_or(CaspReportingError::Overflow)?;
+        let report = CaspDailyReport {
+            from_date_utc: from.clone(),
+            to_date_utc: to.clone(),
+            // One compact aggregate represents the synthetic quarter total. The
+            // assessment still divides it by every calendar day in the quarter.
+            days: vec![CaspDailyAggregate {
+                date_utc: from.clone(),
+                asset_symbol: "rUSD".into(),
+                currency_area: "USD".into(),
+                total_operation_count: count,
+                total_value_raw: value_raw.to_string(),
+                total_value_usd_minor: value_minor.to_string(),
+                means_of_exchange_count: count,
+                means_of_exchange_value_raw: value_raw.to_string(),
+                means_of_exchange_value_usd_minor: value_minor.to_string(),
+                means_of_exchange_value_eur_minor: value_minor.to_string(),
+                excluded_operation_count: 0,
+                known_onchain_overlap_count: 0,
+                known_onchain_overlap_value_raw: "0".into(),
+                classifications: vec![crate::domain::ClassificationAggregate {
+                    classification: "goods_or_services".into(),
+                    operation_count: count,
+                    value_raw: value_raw.to_string(),
+                }],
+                methodology_version: "casp-daily-activity-v1-demo-threshold-seed".into(),
+                conversion_methodology: "demo-usd-eur-parity-v1".into(),
+            }],
+        };
+        self.import_report(&from, &to, report).await?;
+        self.quarterly(year, quarter)
     }
     pub fn daily(
         &self,
@@ -181,6 +261,8 @@ pub enum CaspReportingError {
     Storage(String),
     #[error("CASP reporting calculation overflow")]
     Overflow,
+    #[error("on-chain issuance restriction failed: {0}")]
+    Enforcement(String),
 }
 
 #[cfg(test)]
@@ -191,6 +273,7 @@ mod tests {
         domain::{CaspDailyAggregate, CaspDailyReport, ClassificationAggregate},
         infrastructure::casp_reporting_sqlite::SqliteCaspReportStore,
     };
+    use std::sync::atomic::{AtomicBool, Ordering};
     struct Source {
         report: CaspDailyReport,
     }
@@ -198,6 +281,18 @@ mod tests {
     impl CaspReportSource for Source {
         async fn fetch(&self, _: &str, _: &str) -> Result<CaspDailyReport, CaspReportingError> {
             Ok(self.report.clone())
+        }
+    }
+    struct Controller(AtomicBool);
+    #[async_trait]
+    impl ActivityIssuanceController for Controller {
+        async fn synchronize_issuance_restriction(
+            &self,
+            assessment: &QuarterlyTransactionAssessment,
+        ) -> Result<(), CaspReportingError> {
+            self.0
+                .store(assessment.threshold_enforceable, Ordering::SeqCst);
+            Ok(())
         }
     }
     fn day(count: u64) -> CaspDailyAggregate {
@@ -257,5 +352,49 @@ mod tests {
         assert!(assessment.threshold_breached);
         assert!(!assessment.complete_source_range);
         assert!(!assessment.threshold_enforceable);
+    }
+
+    #[tokio::test]
+    async fn demo_scenario_exceeds_both_thresholds_and_invokes_onchain_control() {
+        let controller = Arc::new(Controller(AtomicBool::new(false)));
+        let store = Arc::new(SqliteCaspReportStore::open(":memory:").unwrap());
+        let service = CaspReportingService::new(
+            Arc::new(Source {
+                report: CaspDailyReport {
+                    from_date_utc: String::new(),
+                    to_date_utc: String::new(),
+                    days: Vec::new(),
+                },
+            }),
+            store.clone(),
+        )
+        .with_issuance_controller(controller.clone());
+
+        let assessment = service.run_demo_threshold_breach(2026, 2).await.unwrap();
+
+        assert_eq!(assessment.calendar_day_count, 91);
+        assert_eq!(assessment.average_daily_operation_count, 1_000_001.0);
+        assert!(assessment.average_daily_value_eur > 200_000_000.0);
+        assert!(assessment.threshold_enforceable);
+        assert!(controller.0.load(Ordering::SeqCst));
+        assert!(store.block_reason().unwrap().is_some());
+
+        let mut recovery_day = day(1);
+        recovery_day.date_utc = "2026-04-01".into();
+        let recovery = CaspReportingService::new(
+            Arc::new(Source {
+                report: CaspDailyReport {
+                    from_date_utc: "2026-04-01".into(),
+                    to_date_utc: "2026-06-30".into(),
+                    days: vec![recovery_day],
+                },
+            }),
+            store.clone(),
+        )
+        .with_issuance_controller(controller.clone());
+        recovery.ingest("2026-04-01", "2026-06-30").await.unwrap();
+
+        assert!(!controller.0.load(Ordering::SeqCst));
+        assert!(store.block_reason().unwrap().is_none());
     }
 }

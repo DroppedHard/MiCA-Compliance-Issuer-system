@@ -86,13 +86,18 @@ impl CaspReportStore for SqliteCaspReportStore {
         let evidence = serde_json::to_string(assessment).map_err(storage)?;
         let timestamp = now();
         tx.execute("INSERT INTO casp_quarterly_assessments(year,quarter,evidence_json,complete_source_range,threshold_breached,threshold_enforceable,assessed_at_unix_ms) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(year,quarter) DO UPDATE SET evidence_json=excluded.evidence_json,complete_source_range=excluded.complete_source_range,threshold_breached=excluded.threshold_breached,threshold_enforceable=excluded.threshold_enforceable,assessed_at_unix_ms=excluded.assessed_at_unix_ms",params![assessment.year,assessment.quarter,evidence,i64::from(assessment.complete_source_range),i64::from(assessment.threshold_breached),i64::from(assessment.threshold_enforceable),timestamp as i64]).map_err(storage)?;
-        if assessment.threshold_enforceable {
-            let reason = format!(
+        let reason = if assessment.threshold_enforceable {
+            format!(
                 "issuance is blocked because complete Q{} {} evidence exceeds both Article 23 demo thresholds",
                 assessment.quarter, assessment.year
-            );
-            tx.execute("UPDATE activity_issuance_gate SET blocked=1,reason=?1,evidence_json=?2,updated_at_unix_ms=?3 WHERE singleton=1",params![reason,evidence,timestamp as i64]).map_err(storage)?;
-        }
+            )
+        } else {
+            format!(
+                "issuance is allowed because complete Q{} {} evidence does not exceed both Article 23 demo thresholds",
+                assessment.quarter, assessment.year
+            )
+        };
+        tx.execute("UPDATE activity_issuance_gate SET blocked=?1,reason=?2,evidence_json=?3,updated_at_unix_ms=?4 WHERE singleton=1",params![i64::from(assessment.threshold_enforceable),reason,evidence,timestamp as i64]).map_err(storage)?;
         tx.commit().map_err(storage)
     }
 }

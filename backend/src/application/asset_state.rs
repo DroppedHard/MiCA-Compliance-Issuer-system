@@ -94,8 +94,8 @@ impl AssetStateService {
 pub fn evaluate(ratio_percent: Option<f64>, evidence_at_unix_ms: Option<u64>) -> AssetState {
     let (state, reason) = match ratio_percent {
         None => (
-            AssetStateCode::DataUnavailable,
-            "Reserve coverage cannot be calculated without token supply",
+            AssetStateCode::Active,
+            "There is no token liability; reserve data is available and coverage is not required",
         ),
         Some(value) if value >= 105.0 => (
             AssetStateCode::Active,
@@ -157,7 +157,7 @@ mod tests {
             evaluate(Some(99.999), Some(1)).state,
             AssetStateCode::MintBlocked
         );
-        assert_eq!(evaluate(None, None).state, AssetStateCode::DataUnavailable);
+        assert_eq!(evaluate(None, None).state, AssetStateCode::Active);
     }
 
     #[test]
