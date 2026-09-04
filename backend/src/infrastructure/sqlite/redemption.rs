@@ -54,7 +54,11 @@ impl RedemptionStore for SqliteRedemptionStore {
         update(&self.connection, id, "completed", None, None)
     }
     fn fail(&self, id: &str, m: &str) -> Result<(), RedemptionError> {
-        self.connection.lock().map_err(storage)?.execute("UPDATE redemption_orders SET status='failed',last_error=?1,updated_at_unix_ms=?2 WHERE operation_id=?3",params![m,now() as i64,id]).map_err(storage)?;
+        // Po potwierdzonym burnie błąd wypłaty nie może cofnąć operacji do
+        // ogólnego `failed`: retry próbowałby ponownie spalić te same tokeny,
+        // a kontrakt poprawnie odrzuciłby zduplikowany operationId. Zachowanie
+        // `burned` pozwala ponowić wyłącznie wypłatę fiat.
+        self.connection.lock().map_err(storage)?.execute("UPDATE redemption_orders SET status=CASE WHEN burn_transaction_hash IS NULL THEN 'failed' ELSE 'burned' END,last_error=?1,updated_at_unix_ms=?2 WHERE operation_id=?3",params![m,now() as i64,id]).map_err(storage)?;
         Ok(())
     }
 }

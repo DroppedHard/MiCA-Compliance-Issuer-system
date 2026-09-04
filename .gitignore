@@ -6,4 +6,4 @@
 **/*.sqlite-shm
 **/*.sqlite-wal
 asset/ignition/deployments/
-
+/test-results/

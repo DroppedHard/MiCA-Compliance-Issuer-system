@@ -5,7 +5,7 @@
 - [Contract and lifecycle state](token-contract.md)
 - [Hardhat contract and scripts](asset.md)
 - [Issuer backend and mockBank](backend.md)
+- [P0 API scenarios](p0-api-tests.md)
 - [Issuer frontend](frontend.md)
 
 The issuer is authoritative for supply, contract lifecycle, reserve assessment, and public rUSD information. The CASP is a separate institution consuming only published interfaces.
-

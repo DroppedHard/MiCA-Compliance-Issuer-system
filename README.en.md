@@ -43,11 +43,32 @@ The Compose file contains public deterministic Hardhat accounts only. Never use 
 
 Component-specific commands are documented below. The basic verification set consists of Rust tests, Hardhat contract tests, and frontend tests plus a production build. GitHub Actions are intentionally omitted because the repository is prepared as a thesis attachment.
 
+## API tests of the running issuer
+
+Create an isolated Python environment and install the repository manifest:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r .\scripts\lib.txt
+```
+
+The manifest currently has no third-party packages because the runner uses only
+Python's standard library. After starting Compose, run:
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\run-p0-api-tests.py
+```
+
+The mutating local-demo suite covers representative EM-01--EM-05 flows and
+writes `test-results/api-p0-issuer-*.json`. It uses unique operation IDs but
+leaves small, auditable issuance, bank, and redemption records. See
+[issuer P0 API scenarios](docs/en/p0-api-tests.md) for the exact scope.
+
 ## Further documentation
 
 - [issuer documentation index](docs/en/README.md);
+- [issuer P0 API scenarios](docs/en/p0-api-tests.md);
 - [contract model and lifecycle](docs/en/token-contract.md);
 - [contract and blockchain scripts](docs/en/asset.md);
 - [backend, mockBank and API](docs/en/backend.md);
 - [issuer frontend](docs/en/frontend.md).
-

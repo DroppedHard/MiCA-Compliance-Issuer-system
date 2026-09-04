@@ -43,10 +43,38 @@ Compose zawiera wyłącznie publiczne, deterministyczne konta Hardhat. Nie wolno
 
 Szczegółowe polecenia zawierają README komponentów. Podstawowa weryfikacja obejmuje `cargo test`, testy Hardhat oraz test i produkcyjny build frontendu. Repozytorium celowo nie zawiera GitHub Actions — jest przygotowane jako samodzielny załącznik do pracy.
 
+## Testy API uruchomionego emitenta
+
+Scenariusze P0 są wykonywane względem rzeczywiście uruchomionych kontenerów
+emitenta i mockBanku. Zalecane jest odizolowane środowisko wirtualne:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r .\scripts\lib.txt
+```
+
+Manifest `scripts/lib.txt` nie zawiera obecnie pakietów zewnętrznych, ponieważ
+runner korzysta wyłącznie z biblioteki standardowej. Pozostaje częścią
+repozytorium, aby sposób przygotowania środowiska był stabilny po ewentualnym
+dodaniu zależności.
+
+Po uruchomieniu Compose wykonaj:
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\run-p0-api-tests.py
+```
+
+Test obejmuje przykłady EM-01–EM-05 i jest mutujący: pozostawia niewielkie
+operacje bankowe, emisje, spalenie oraz rekordy audytowe. Każdy przebieg używa
+nowych identyfikatorów. Niezerowy kod wyjścia oznacza błąd, a raport trafia do
+`test-results/api-p0-issuer-*.json`. Szczegóły opisano w dokumencie
+[scenariuszy API P0 emitenta](docs/pl/p0-api-tests.md).
+
 ## Dalsza dokumentacja
 
 - [indeks dokumentacji emitenta](docs/pl/README.md);
 - [model i stany kontraktu](docs/pl/token-contract.md);
 - [kontrakt i skrypty blockchainowe](docs/pl/asset.md);
 - [backend, mockBank i endpointy](docs/pl/backend.md);
+- [scenariusze API P0 emitenta](docs/pl/p0-api-tests.md);
 - [frontend emitenta](docs/pl/frontend.md).
