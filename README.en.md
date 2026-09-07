@@ -64,6 +64,18 @@ writes `test-results/api-p0-issuer-*.json`. It uses unique operation IDs but
 leaves small, auditable issuance, bank, and redemption records. See
 [issuer P0 API scenarios](docs/en/p0-api-tests.md) for the exact scope.
 
+On a fresh, disposable deployment, the terminal EM-07 scenario can be run as
+the final check:
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\run-p0-api-tests.py --terminal-wind-down
+```
+
+It verifies that wind-down blocks issuance and ordinary transfers while
+redemption burns and the 1:1 payout remain available. The command leaves the
+contract irreversibly in `wind_down`; run it last and recreate the local demo
+environment and volumes afterwards.
+
 ## Further documentation
 
 - [issuer documentation index](docs/en/README.md);

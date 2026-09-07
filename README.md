@@ -70,6 +70,17 @@ nowych identyfikatorów. Niezerowy kod wyjścia oznacza błąd, a raport trafia 
 `test-results/api-p0-issuer-*.json`. Szczegóły opisano w dokumencie
 [scenariuszy API P0 emitenta](docs/pl/p0-api-tests.md).
 
+Na końcu testów świeżego, jednorazowego wdrożenia można dodatkowo zweryfikować
+nieodwracalne wygaszanie tokenu:
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\run-p0-api-tests.py --terminal-wind-down
+```
+
+Ten wariant pokrywa EM-07: blokadę emisji i zwykłych transferów przy zachowaniu
+wykupu oraz spalenia. Pozostawia kontrakt w stanie `wind_down`, dlatego należy
+uruchamiać go jako ostatni i później odtworzyć lokalne środowisko z wolumenami.
+
 ## Dalsza dokumentacja
 
 - [indeks dokumentacji emitenta](docs/pl/README.md);
